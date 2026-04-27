@@ -1,0 +1,15 @@
+{
+  "stonesPerPlayer": 5,
+  "stoneRadius": 18,
+  "target": {
+    "x": 300,
+    "y": 150,
+    "radius": 75
+  },
+  "field": {
+    "width": 600,
+    "height": 800
+  },
+  "maxForce": 18,
+  "friction": 0.018
+}

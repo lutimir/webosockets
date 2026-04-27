@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Curling Online</title>
+    <!-- Vlastne styly — responsive, dark/light tema, 3 farebny dizajn -->
+    <link rel="stylesheet" href="style.css">
+    <!-- Matter.js — fyzikalna kniznica pre kolizie, trenie a odrazy kamenov
+         Nacitavame z CDN (Content Delivery Network) — netreba instalovat -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js"></script>
+</head>
+<body>
+
+    <!--
+        STRUKTURA STRANKY:
+        Cela hra je SINGLE PAGE APPLICATION (SPA) — vsetko je v jednom HTML subore.
+        Prepinanie medzi "strankami" (menu, pravidla, lobby, hra) sa robi tak,
+        ze sa ukazuju/skryvaju <div> elementy s triedou .screen.
+        Aktivna obrazovka ma triedu .active (display:flex), ostatne su skryte (display:none).
+    -->
+
+    <!-- Upozornenie pre mobilne zariadenia v portrait (na vysku) rezime.
+         Hra vyzaduje landscape (na sirku). CSS @media (orientation: portrait) to zobrazi. -->
+    <div id="rotate-msg">
+        <div class="rotate-icon">&#128241;</div>
+        <p id="rotate-text">Otoc telefon na sirku pre hru</p>
+    </div>
+
+    <!-- Globalne prepinace jazyka a temy — fixovane vpravo hore.
+         Pocas hry su skryte (prepinace su v chat headeri).
+         Na ostatnych obrazovkach (menu, rules, lobby) su viditelne. -->
+    <div id="global-toggles">
+        <!-- Indikator poctu pripojenych hracov — zelene svetielko + cislo
+             Aktualizuje sa cez WebSocket spravu 'online_count' od servera -->
+        <span id="online-indicator" title="Online hraci">
+            <span class="online-dot"></span>
+            <span id="online-count">0</span>
+        </span>
+        <button id="btn-lang" class="hud-icon-btn toggle-lang" title="EN / SK">SK</button>
+        <button id="btn-theme" class="hud-icon-btn toggle-theme" title="Tmava / Svetla">&#9790;</button>
+    </div>
+
+    <!-- ================================================================== -->
+    <!-- OBRAZOVKA: PRIHLÁSENIE / REGISTRÁCIA                                -->
+    <!-- ================================================================== -->
+    <div id="screen-auth" class="screen active">
+        <div class="container">
+            <h1>CURLING</h1>
+            <p class="subtitle">Online hra pre dvoch hracov</p>
+            <div class="auth-tabs">
+                <button class="auth-tab active" data-tab="login">Prihlasenie</button>
+                <button class="auth-tab" data-tab="register">Registracia</button>
+            </div>
+            <div id="auth-form-login" class="auth-form">
+                <input type="text" id="auth-username" placeholder="Meno..." maxlength="50" autocomplete="new-password" value="">
+                <input type="password" id="auth-password" placeholder="Heslo..." autocomplete="new-password" value="">
+                <button id="btn-login" class="btn btn-primary">Prihlasit sa</button>
+            </div>
+            <div id="auth-form-register" class="auth-form" style="display:none">
+                <input type="text" id="reg-username" placeholder="Meno..." maxlength="50" autocomplete="new-password" value="">
+                <input type="password" id="reg-password" placeholder="Heslo..." autocomplete="new-password" value="">
+                <button id="btn-register" class="btn btn-primary">Registrovat sa</button>
+            </div>
+            <div class="auth-divider"><span>alebo</span></div>
+            <button id="btn-guest" class="btn btn-secondary">Hrat ako Guest</button>
+            <p id="auth-error" class="auth-error"></p>
+        </div>
+    </div>
+
+    <!-- ================================================================== -->
+    <!-- OBRAZOVKA: HLAVNE MENU + LOBBY                                      -->
+    <!-- Lava strana: Rebricek (top 5). Stred: menu. Prava strana: Lobby chat -->
+    <!-- ================================================================== -->
+    <div id="screen-menu" class="screen">
+        <!-- Rebricek — lava strana -->
+        <div id="menu-leaderboard" class="side-panel left-panel">
+            <div class="side-panel-header">
+                <span id="lb-header-text">Rebricek</span>
+                <button id="btn-close-menu-lb" class="panel-close-btn">&times;</button>
+            </div>
+            <div class="side-panel-body">
+                <div id="lb-total-games" class="lb-stat">Celkovo hier: <strong id="lb-total-num">0</strong></div>
+                <table class="lb-table">
+                    <thead><tr><th>#</th><th>Hrac</th><th>V</th><th>%</th></tr></thead>
+                    <tbody id="lb-tbody"></tbody>
+                </table>
+                <div class="lb-divider"></div>
+                <div id="lb-my-stats" class="lb-my-stats"></div>
+                <!-- Admin panel — viditelny len pre admina -->
+                <div id="admin-panel" style="display:none;">
+                    <div class="lb-divider"></div>
+                    <h4 id="admin-panel-title" style="margin:8px 0 4px;font-size:12px;color:var(--accent);">Admin</h4>
+                    <div id="admin-total-edit" style="margin-bottom:8px;font-size:11px;">
+                        Celkovo hier: <input type="number" id="admin-total-games" style="width:50px;font-size:11px;" min="0">
+                        <button id="btn-admin-save-total" class="btn-small" style="font-size:10px;padding:2px 6px;">OK</button>
+                    </div>
+                    <div id="admin-users-list"></div>
+                </div>
+            </div>
+        </div>
+        <!-- Stredny panel — menu -->
+        <div class="container menu-center">
+            <h1>CURLING</h1>
+            <p class="subtitle">Online hra pre dvoch hracov</p>
+            <div id="user-info" class="user-info">
+                <span id="user-display"></span>
+                <button id="btn-logout" class="btn-small">Odhlasit</button>
+            </div>
+            <div class="difficulty-group">
+                <button class="btn-diff selected" data-diff="easy">Lahka<span class="diff-label">s navigaciou</span><span class="lobby-count" id="lobby-count-easy">0/2</span></button>
+                <button class="btn-diff" data-diff="hard">Tazka<span class="diff-label">bez navigacie</span><span class="lobby-count" id="lobby-count-hard">0/2</span></button>
+            </div>
+            <button id="btn-play" class="btn btn-primary">Hrat</button>
+            <button id="btn-spectate" class="btn btn-spectate" style="display:none">Sledovat</button>
+            <button id="btn-rules" class="btn btn-secondary">Pravidla</button>
+        </div>
+        <!-- Lobby chat — prava strana (zavratelny) -->
+        <div id="lobby-chat-panel" class="side-panel right-panel">
+            <div class="side-panel-header">
+                <span id="lobby-chat-header-text">Lobby Chat</span>
+                <button id="btn-close-lobby-chat" class="panel-close-btn">&times;</button>
+            </div>
+            <div id="lobby-chat-messages" class="side-panel-body chat-body"></div>
+            <div class="lobby-chat-input-area">
+                <input type="text" id="lobby-chat-input" placeholder="Sprava..." maxlength="500" autocomplete="off">
+                <button id="btn-lobby-chat-send">&#9654;</button>
+            </div>
+        </div>
+        <button id="btn-open-lobby-chat" class="panel-toggle-btn right-toggle" style="display:none">CHAT</button>
+        <button id="btn-open-menu-lb" class="panel-toggle-btn left-toggle" style="display:none">REBRICEK</button>
+    </div>
+
+    <!-- ================================================================== -->
+    <!-- OBRAZOVKA: PRAVIDLA HRY                                             -->
+    <!-- ================================================================== -->
+    <!-- Rules -->
+    <div id="screen-rules" class="screen">
+        <div class="container">
+            <h2>Pravidla hry</h2>
+            <div class="rules-text">
+                <p><strong>Ciel:</strong> Umiestni svoje kamene co najblizsie k stredu ciela (domu).</p>
+                <p><strong>Ovladanie:</strong> Klikni na kamen na startovej pozicii a tiahni mysou smerom od ciela. Cim dlhsi tah, tym vacsia sila vystrelu. Po uvolneni mysi sa kamen vystreli v opacnom smere.</p>
+                <p><strong>Striedanie:</strong> Hraci sa striedaju v hadzani kamenov. Dalsi hrac moze hadzat az ked sa vsetky kamene zastavia.</p>
+                <p><strong>Fyzika:</strong> Kamene sa spomaluju trenim, odrazaju od stien aj od seba navzajom.</p>
+                <p><strong>Vitaz:</strong> Po odohrani vsetkych kamenov vitazi hrac, ktoreho kamen je najblizsie k stredu ciela.</p>
+                <p><strong>Pauza:</strong> Aktualny hrac moze hru pozastavit. Pauzu moze zrusit ktorykolvek hrac.</p>
+                <p><strong>Restart:</strong> Hru je mozne restartovat po vzajomnom suhlase oboch hracov.</p>
+            </div>
+            <button id="btn-back-menu" class="btn btn-secondary">Spat</button>
+        </div>
+    </div>
+
+    <!-- ================================================================== -->
+    <!-- OBRAZOVKA: LOBBY — cakanie na supera                                -->
+    <!-- Po kliknuti "Hrat" sa hrac pripoji cez WebSocket a caka.           -->
+    <!-- Server posle 'waiting' → zobrazi sa loader.                        -->
+    <!-- Ked pride druhy hrac → server posle 'game_start' → prepne na hru. -->
+    <!-- ================================================================== -->
+    <!-- Lobby -->
+    <div id="screen-lobby" class="screen">
+        <div class="container">
+            <h2>Cakanie na supera...</h2>
+            <!-- Zobrazenie vybraneho modu a poctu hracov v lobby -->
+            <p id="lobby-mode" class="lobby-info"></p>
+            <p id="lobby-count" class="lobby-count-big">1/2</p>
+            <div class="loader"></div>
+            <button id="btn-cancel" class="btn btn-secondary">Zrusit</button>
+        </div>
+    </div>
+
+    <!-- ================================================================== -->
+    <!-- OBRAZOVKA: HRA — hlavna herna obrazovka                             -->
+    <!-- Rozdelena na 2 casti:                                               -->
+    <!--   #game-area — Canvas + HUD + ovladacie tlacidla (flex: 1)         -->
+    <!--   #chat-panel — Chat sidebar (fixna sirka 280px)                   -->
+    <!-- Na mobile: vertikalny layout (chat pod hrou, 200px)                -->
+    <!-- ================================================================== -->
+    <!-- Game -->
+    <div id="screen-game" class="screen">
+        <!-- Rebricek v hre — lava strana (vzdy viditelny) -->
+        <div id="game-leaderboard" class="game-side-panel">
+            <div class="game-lb-header">
+                <span>Top 5</span>
+            </div>
+            <div id="game-lb-body">
+                <table class="lb-table lb-table-sm">
+                    <thead><tr><th>#</th><th>Hrac</th><th>V</th></tr></thead>
+                    <tbody id="game-lb-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+        <!-- Herna plocha s Canvas elementom -->
+        <div id="game-area">
+            <!-- Canvas — tu sa kresli cela hra (hracia plocha, kamene, ciel, navigacia)
+                 Vsetko kreslenie prebieha cez Canvas 2D API v game.js -->
+            <canvas id="gameCanvas"></canvas>
+            <!-- HUD — informacie o hracoch, pocet kamenov, kto je na tahu
+                 pointer-events:none — neklikatelny, neblokuje canvas events -->
+            <div id="game-hud">
+                <!-- Lavy hrac (P1) — meno + pocet zostávajucich kamenov (emoji) -->
+                <div id="hud-p1">
+                    <span class="hud-name" id="hud-name1">Hrac 1</span>
+                    <span class="hud-stones" id="hud-stones1"></span>
+                </div>
+                <!-- Stredovy indikator — ukazuje kto je na tahu / Cakaj... -->
+                <div id="hud-center">
+                    <span id="hud-turn">Cakaj...</span>
+                </div>
+                <!-- Pravy hrac (P2) — pocet kamenov + meno -->
+                <div id="hud-p2">
+                    <span class="hud-stones" id="hud-stones2"></span>
+                    <span class="hud-name" id="hud-name2">Hrac 2</span>
+                </div>
+            </div>
+            <!-- Herne ovladacie tlacidla — pauza a restart
+                 Pauza: len aktualny hrac (na tahu) moze pauznut
+                 Restart: posle ziadost superovi, caka na potvrdenie -->
+            <div id="game-controls">
+                <button id="btn-pause" class="btn-small">Pauza</button>
+                <button id="btn-restart-req" class="btn-small">Restart</button>
+            </div>
+        </div>
+        <!-- ============================================================ -->
+        <!-- CHAT PANEL — bocny panel s chatom (280px, na mobile pod hrou)  -->
+        <!-- Spravy su: textove (od hracov), systemove (pripojenie, pauza), -->
+        <!--   a herních udalosti (kolizie, vystrely) s timestampom        -->
+        <!-- ============================================================ -->
+        <div id="chat-panel">
+            <!-- Chat hlavicka — nazov + prepinace jazyka a temy
+                 Tieto prepinace nahrazuju globalne pocas hry -->
+            <div id="chat-header">
+                <span id="chat-header-text">Chat</span>
+                <div id="chat-toggles">
+                    <!-- Online indikator v chat headeri (viditelny pocas hry) -->
+                    <span class="online-indicator-small" title="Online hraci">
+                        <span class="online-dot"></span>
+                        <span class="online-count-mirror">0</span>
+                    </span>
+                    <button class="hud-icon-btn toggle-lang" title="EN / SK">SK</button>
+                    <button class="hud-icon-btn toggle-theme" title="Tmava / Svetla">&#9790;</button>
+                </div>
+            </div>
+            <!-- Oblast sprav — scroll kontajner, automaticky scrolluje dole
+                 Spravy su pridavane dynamicky cez game.js addChatEvent() -->
+            <div id="chat-messages"></div>
+            <!-- Vstupne pole — maxlength 200 znakov, Enter = odoslat
+                 Posiela cez WebSocket typ 'chat', server broadcastuje obom -->
+            <div id="chat-input-area">
+                <input type="text" id="chat-input" placeholder="Sprava..." maxlength="200" autocomplete="off">
+                <button id="btn-chat-send">&#9654;</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================================================================== -->
+    <!-- NOTIFIKACIA — docastne zobrazenie textu (napr. "Super odmietol restart") -->
+    <!-- Zobrazuje sa na 3 sekundy, potom zmizne (CSS animacia + JS timeout)     -->
+    <!-- ================================================================== -->
+    <div id="notification" class="hidden"></div>
+
+    <!-- ================================================================== -->
+    <!-- OVERLAY: PAUZA                                                      -->
+    <!-- Zobrazi sa ked hrac klikne "Pauza" alebo dostane 'paused' od servera -->
+    <!-- Obidvaja hraci vidia overlay, obidvaja mozu kliknut "Pokracovat"    -->
+    <!-- ================================================================== -->
+    <div id="overlay-pause" class="overlay hidden">
+        <div class="overlay-box">
+            <h2>PAUZA</h2>
+            <button id="btn-resume" class="btn btn-primary">Pokracovat</button>
+        </div>
+    </div>
+
+    <!-- ================================================================== -->
+    <!-- OVERLAY: KONIEC HRY                                                 -->
+    <!-- Zobrazi vitaza/remizu, vzdialenosti kamenov od stredu               -->
+    <!-- Moznosti: "Nova hra" (zostane pripojeny, ide do lobby)              -->
+    <!--           "Odist" (odpoji WS, vrati do menu)                       -->
+    <!-- ================================================================== -->
+    <div id="overlay-gameover" class="overlay hidden">
+        <div class="overlay-box">
+            <h2 id="gameover-title">Koniec hry</h2>
+            <p id="gameover-details"></p>
+            <button id="btn-new-game" class="btn btn-primary">Nova hra</button>
+            <button id="btn-leave" class="btn btn-secondary">Odist</button>
+        </div>
+    </div>
+
+    <!-- ================================================================== -->
+    <!-- OVERLAY: ZIADOST O RESTART                                          -->
+    <!-- Zobrazi sa LEN superovi (ten co nedal ziadost)                      -->
+    <!-- Ziadatel vidi notifikaciu "Cakam na odpoved..."                     -->
+    <!-- Accept → server resetne hru, Decline → notifikacia ziadatelovi     -->
+    <!-- ================================================================== -->
+    <div id="overlay-restart" class="overlay hidden">
+        <div class="overlay-box">
+            <h2>Restart hry</h2>
+            <p>Super ziada o restart hry.</p>
+            <button id="btn-accept-restart" class="btn btn-primary">Suhlasit</button>
+            <button id="btn-decline-restart" class="btn btn-secondary">Odmietnut</button>
+        </div>
+    </div>
+
+    <!-- ================================================================== -->
+    <!-- OVERLAY: ODPOJENIE SUPERA                                           -->
+    <!-- Zobrazi sa automaticky ked server posle 'opponent_disconnected'     -->
+    <!-- Po kliknuti OK → vrati hraca do menu                               -->
+    <!-- ================================================================== -->
+    <div id="overlay-disconnect" class="overlay hidden">
+        <div class="overlay-box">
+            <h2>Odpojenie</h2>
+            <p>Super sa odpojil z hry.</p>
+            <button id="btn-disconnect-ok" class="btn btn-primary">OK</button>
+        </div>
+    </div>
+
+    <!-- Hlavny herny skript — obsahuje vsetku klientsku logiku:
+         WebSocket komunikacia, Matter.js fyzika, Canvas rendering, UI -->
+    <script src="game.js"></script>
+</body>
+</html>
