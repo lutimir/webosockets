@@ -13,6 +13,8 @@ const TEST_DB_NAME = "synckit_test";
 export async function createTestDb(): Promise<{
   db: Db;
   sql: postgres.Sql;
+  /** Connection string of the isolated test database. */
+  databaseUrl: string;
   truncateAll: () => Promise<void>;
   close: () => Promise<void>;
 }> {
@@ -44,5 +46,11 @@ export async function createTestDb(): Promise<{
     );
   };
 
-  return { db, sql, truncateAll, close: () => sql.end({ timeout: 5 }) };
+  return {
+    db,
+    sql,
+    databaseUrl: testUrl.toString(),
+    truncateAll,
+    close: () => sql.end({ timeout: 5 }),
+  };
 }

@@ -1,45 +1,45 @@
-import { parseServerMessage, type ServerMessage } from "@synckit/core";
 import { type FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { WebSocket } from "ws";
 
 import { buildApp } from "./app.js";
 import { loadEnv } from "./env.js";
+import { signClientToken } from "./lib/tokens.js";
+import { createOrganization, createProject } from "./repos/index.js";
+import { createTestDb } from "./test/db.js";
+import { TestClient } from "./test/ws.js";
 
 let app: FastifyInstance;
-let baseUrl: string;
+let token: string;
+let closeTestDb: () => Promise<void>;
 
 beforeAll(async () => {
-  app = await buildApp(loadEnv({ NODE_ENV: "test" }));
+  const testDb = await createTestDb();
+  closeTestDb = testDb.close;
+  await testDb.truncateAll();
+
+  const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: testDb.databaseUrl });
+  app = await buildApp(env);
   await app.listen({ port: 0, host: "127.0.0.1" });
-  const address = app.server.address();
-  if (address === null || typeof address === "string") throw new Error("no listen address");
-  baseUrl = `127.0.0.1:${address.port}`;
+
+  const org = await createOrganization(testDb.db, { name: "T", slug: "app-test-org" });
+  const project = await createProject(testDb.db, {
+    organizationId: org.id,
+    name: "T",
+    slug: "app-test",
+    environment: "dev",
+  });
+  token = await signClientToken(env.JWT_SECRET, {
+    projectId: project.id,
+    endUserId: "tester",
+    displayName: "Tester",
+    avatarUrl: null,
+  });
 });
 
 afterAll(async () => {
   await app.close();
+  await closeTestDb();
 });
-
-function connect(): Promise<WebSocket> {
-  return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://${baseUrl}/v1/realtime`);
-    socket.once("open", () => resolve(socket));
-    socket.once("error", reject);
-  });
-}
-
-function nextMessage(socket: WebSocket): Promise<ServerMessage> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("timed out waiting for message")), 5_000);
-    socket.once("message", (raw: Buffer) => {
-      clearTimeout(timer);
-      const parsed = parseServerMessage(raw.toString("utf8"));
-      if (parsed.ok) resolve(parsed.message);
-      else reject(new Error(`server sent invalid message: ${parsed.error}`));
-    });
-  });
-}
 
 describe("GET /healthz", () => {
   it("reports db and redis as ok when both are reachable", async () => {
@@ -49,62 +49,51 @@ describe("GET /healthz", () => {
   });
 });
 
-describe("WS /v1/realtime", () => {
+describe("WS /v1/realtime basics", () => {
   it("answers ping with pong", async () => {
-    const socket = await connect();
+    const client = await TestClient.connect(app, token);
     try {
-      socket.send(JSON.stringify({ type: "ping" }));
-      const message = await nextMessage(socket);
-      expect(message.type).toBe("pong");
-      if (message.type === "pong") {
-        expect(message.ts).toBeGreaterThan(0);
-      }
+      client.send({ type: "ping" });
+      const pong = await client.waitFor("pong");
+      expect(pong.ts).toBeGreaterThan(0);
     } finally {
-      socket.close();
+      client.close();
     }
   });
 
   it("rejects invalid messages with an error and keeps the connection open", async () => {
-    const socket = await connect();
+    const client = await TestClient.connect(app, token);
     try {
-      socket.send("{definitely not json");
-      const error = await nextMessage(socket);
-      expect(error.type).toBe("error");
-      if (error.type === "error") {
-        expect(error.code).toBe("invalid_message");
-      }
+      client.socket.send("{definitely not json");
+      const error = await client.waitFor("error");
+      expect(error.code).toBe("invalid_message");
 
-      // Connection must survive a bad message.
-      socket.send(JSON.stringify({ type: "ping" }));
-      const pong = await nextMessage(socket);
-      expect(pong.type).toBe("pong");
+      client.send({ type: "ping" });
+      await client.waitFor("pong");
     } finally {
-      socket.close();
+      client.close();
     }
   });
 
   it("rejects binary frames", async () => {
-    const socket = await connect();
+    const client = await TestClient.connect(app, token);
     try {
-      socket.send(Buffer.from([0x01, 0x02]));
-      const error = await nextMessage(socket);
-      expect(error.type).toBe("error");
+      client.socket.send(Buffer.from([0x01, 0x02]));
+      const error = await client.waitFor("error");
+      expect(error.code).toBe("invalid_message");
     } finally {
-      socket.close();
+      client.close();
     }
   });
 
-  it("answers valid-but-unimplemented messages with an explanatory error", async () => {
-    const socket = await connect();
+  it("answers comment_create with an explanatory error (arrives in a later milestone)", async () => {
+    const client = await TestClient.connect(app, token);
     try {
-      socket.send(JSON.stringify({ type: "join_room", roomExternalId: "doc-1" }));
-      const error = await nextMessage(socket);
-      expect(error.type).toBe("error");
-      if (error.type === "error") {
-        expect(error.message).toContain("join_room");
-      }
+      client.send({ type: "comment_create", roomExternalId: "doc-1", body: "hi" });
+      const error = await client.waitFor("error");
+      expect(error.message).toContain("comment_create");
     } finally {
-      socket.close();
+      client.close();
     }
   });
 });
@@ -113,18 +102,10 @@ describe("graceful shutdown", () => {
   it("closes open websocket connections on app.close()", async () => {
     const localApp = await buildApp(loadEnv({ NODE_ENV: "test" }));
     await localApp.listen({ port: 0, host: "127.0.0.1" });
-    const address = localApp.server.address();
-    if (address === null || typeof address === "string") throw new Error("no listen address");
+    const client = await TestClient.connect(localApp, token);
 
-    const socket = await new Promise<WebSocket>((resolve, reject) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${address.port}/v1/realtime`);
-      ws.once("open", () => resolve(ws));
-      ws.once("error", reject);
-    });
-
-    const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+    const closed = client.waitForClose();
     await localApp.close();
-    await closed;
-    expect(socket.readyState).toBe(socket.CLOSED);
+    expect(await closed).toBeGreaterThan(0);
   });
 });

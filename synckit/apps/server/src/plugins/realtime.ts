@@ -1,52 +1,183 @@
-import { parseClientMessage, type ServerMessage } from "@synckit/core";
+import { CLOSE_CODES, parseClientMessage, type ClientMessage } from "@synckit/core";
 import { type FastifyInstance } from "fastify";
 import { type WebSocket } from "ws";
 
-function send(socket: WebSocket, message: ServerMessage): void {
-  if (socket.readyState === socket.OPEN) {
-    socket.send(JSON.stringify(message));
-  }
-}
+import { verifyClientToken } from "../lib/tokens.js";
+import { type ManagedConnection } from "../realtime/connection-manager.js";
+import { recordUsage } from "../repos/index.js";
+
+const RATE_VIOLATIONS_BEFORE_CLOSE = 5;
 
 /**
- * Realtime gateway. This milestone only establishes the connection lifecycle
- * and the ping/pong contract; rooms, presence and auth land in later prompts.
+ * Realtime gateway: authenticates the client JWT from `?token=`, then routes
+ * protocol messages to the RoomHub. All per-connection message handling is
+ * serialized on a promise chain so joins always complete before updates.
  */
 export function realtimeRoutes(app: FastifyInstance): void {
-  app.get("/realtime", { websocket: true }, (socket, request) => {
-    request.log.info("realtime connection opened");
+  const { manager, hub } = app.realtime;
 
-    socket.on("message", (raw: Buffer, isBinary: boolean) => {
-      if (isBinary) {
-        send(socket, {
+  async function handleMessage(
+    connection: ManagedConnection,
+    raw: Buffer,
+    isBinary: boolean,
+  ): Promise<void> {
+    if (isBinary) {
+      manager.deliver(connection, {
+        type: "error",
+        code: "invalid_message",
+        message: "binary frames are not supported",
+      });
+      return;
+    }
+
+    if (!connection.bucket.tryConsume()) {
+      connection.rateViolations += 1;
+      if (connection.rateViolations >= RATE_VIOLATIONS_BEFORE_CLOSE) {
+        connection.socket.close(CLOSE_CODES.RATE_LIMITED, "rate limit exceeded repeatedly");
+        return;
+      }
+      manager.deliver(connection, {
+        type: "error",
+        code: "rate_limited",
+        message: "too many messages, slow down",
+      });
+      return;
+    }
+
+    const parsed = parseClientMessage(raw.toString("utf8"));
+    if (!parsed.ok) {
+      manager.deliver(connection, {
+        type: "error",
+        code: "invalid_message",
+        message: parsed.error,
+      });
+      return;
+    }
+
+    await routeMessage(connection, parsed.message);
+  }
+
+  async function routeMessage(
+    connection: ManagedConnection,
+    message: ClientMessage,
+  ): Promise<void> {
+    switch (message.type) {
+      case "ping":
+        manager.deliver(connection, { type: "pong", ts: Date.now() });
+        return;
+      case "join_room":
+        await hub.join(connection, message.roomExternalId, message.initialPresence);
+        return;
+      case "leave_room":
+        if (!(await hub.leave(connection, message.roomExternalId))) {
+          notInRoom(connection, message.roomExternalId);
+        }
+        return;
+      case "presence_update":
+        if (!(await hub.updatePresence(connection, message.roomExternalId, message.data))) {
+          notInRoom(connection, message.roomExternalId);
+        }
+        return;
+      case "broadcast":
+        if (
+          !(await hub.broadcast(connection, message.roomExternalId, message.event, message.payload))
+        ) {
+          notInRoom(connection, message.roomExternalId);
+        }
+        return;
+      case "comment_create":
+        manager.deliver(connection, {
           type: "error",
-          code: "invalid_message",
-          message: "binary frames are not supported",
+          code: "internal_error",
+          message: "comment_create arrives with the REST API in a later milestone",
         });
         return;
-      }
+    }
+  }
 
-      const parsed = parseClientMessage(raw.toString("utf8"));
-      if (!parsed.ok) {
-        send(socket, { type: "error", code: "invalid_message", message: parsed.error });
-        return;
-      }
+  function notInRoom(connection: ManagedConnection, roomExternalId: string): void {
+    manager.deliver(connection, {
+      type: "error",
+      code: "not_in_room",
+      message: `join room "${roomExternalId}" first`,
+    });
+  }
 
-      switch (parsed.message.type) {
-        case "ping":
-          send(socket, { type: "pong", ts: Date.now() });
-          break;
-        default:
-          send(socket, {
-            type: "error",
-            code: "internal_error",
-            message: `"${parsed.message.type}" is not supported yet`,
-          });
-      }
+  app.get("/realtime", { websocket: true }, (socket: WebSocket, request) => {
+    // Buffer messages that arrive while the token is being verified.
+    const pending: [Buffer, boolean][] = [];
+    let connection: ManagedConnection | undefined;
+    let ready = false;
+    let chain = Promise.resolve();
+
+    const enqueue = (raw: Buffer, isBinary: boolean) => {
+      chain = chain
+        .then(() => (connection ? handleMessage(connection, raw, isBinary) : undefined))
+        .catch((error: unknown) => {
+          request.log.error({ err: error }, "error handling realtime message");
+          if (connection) {
+            manager.deliver(connection, {
+              type: "error",
+              code: "internal_error",
+              message: "internal error",
+            });
+          }
+        });
+    };
+
+    socket.on("message", (raw: Buffer, isBinary: boolean) => {
+      if (ready) enqueue(raw, isBinary);
+      else pending.push([raw, isBinary]);
     });
 
     socket.on("close", () => {
-      request.log.info("realtime connection closed");
+      chain = chain
+        .then(async () => {
+          if (!connection) return;
+          await hub.leaveAll(connection);
+          manager.unregister(connection);
+
+          const minutes = Math.max(1, Math.ceil((Date.now() - connection.connectedAt) / 60_000));
+          await recordUsage(app.db, {
+            projectId: connection.identity.projectId,
+            kind: "connection_minutes",
+            quantity: minutes,
+          });
+          connection = undefined;
+        })
+        .catch((error: unknown) => {
+          // Redis/DB may already be closing during shutdown — never let the
+          // cleanup chain produce an unhandled rejection.
+          request.log.warn({ err: error }, "error during realtime connection cleanup");
+          if (connection) {
+            manager.unregister(connection);
+            connection = undefined;
+          }
+        });
     });
+
+    void (async () => {
+      const { token } = request.query as { token?: string };
+      const identity = token ? await verifyClientToken(app.env.JWT_SECRET, token) : undefined;
+      if (!identity) {
+        socket.close(CLOSE_CODES.UNAUTHORIZED, "missing or invalid token");
+        return;
+      }
+
+      const result = manager.register(socket, identity);
+      if (!result.ok) {
+        socket.close(CLOSE_CODES.LIMIT_EXCEEDED, result.reason);
+        return;
+      }
+
+      connection = result.connection;
+      request.log.info(
+        { connectionId: connection.id, endUserId: identity.endUserId },
+        "realtime connection established",
+      );
+      ready = true;
+      for (const [raw, isBinary] of pending) enqueue(raw, isBinary);
+      pending.length = 0;
+    })();
   });
 }

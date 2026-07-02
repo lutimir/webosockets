@@ -9,6 +9,14 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(16).default("dev-only-change-me-0000000000000000"),
   INTERNAL_API_SECRET: z.string().min(16).default("dev-only-change-me-1111111111111111"),
   DASHBOARD_ORIGIN: z.string().default("http://localhost:3000"),
+  // ─── Realtime tuning (sane production defaults; overridden in tests) ──────
+  WS_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(30_000),
+  WS_MAX_CONNECTIONS_PER_END_USER: z.coerce.number().int().positive().default(5),
+  WS_MAX_CONNECTIONS_PER_PROJECT: z.coerce.number().int().positive().default(1_000),
+  WS_RATE_LIMIT_PER_SEC: z.coerce.number().int().positive().default(50),
+  WS_BACKPRESSURE_SOFT_BYTES: z.coerce.number().int().positive().default(1_048_576),
+  WS_BACKPRESSURE_HARD_BYTES: z.coerce.number().int().positive().default(5_242_880),
+  PRESENCE_TTL_SECONDS: z.coerce.number().int().positive().default(300),
 });
 
 export type Env = z.infer<typeof envSchema>;
