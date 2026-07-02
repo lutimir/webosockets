@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { Redis } from "ioredis";
 import postgres from "postgres";
 
+import { createDb, type Db } from "./db/client.js";
 import { type Env } from "./env.js";
 import { healthzRoutes } from "./plugins/healthz.js";
 import { realtimeRoutes } from "./plugins/realtime.js";
@@ -11,6 +12,7 @@ declare module "fastify" {
   interface FastifyInstance {
     env: Env;
     sql: postgres.Sql;
+    db: Db;
     redis: Redis;
   }
 }
@@ -33,6 +35,7 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
 
   app.decorate("env", env);
   app.decorate("sql", sql);
+  app.decorate("db", createDb(sql));
   app.decorate("redis", redis);
 
   app.addHook("onClose", async () => {
