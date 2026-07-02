@@ -54,6 +54,22 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
     body: z.string().min(1).max(10_000),
     threadId: z.uuid().optional(),
     anchor: jsonValueSchema.optional(),
+    /** Client correlation id, echoed back in the resulting comment_created. */
+    requestId: z.string().max(64).optional(),
+  }),
+  z.object({
+    type: z.literal("comment_list"),
+    roomExternalId: roomExternalIdSchema,
+    requestId: z.string().max(64),
+    cursor: z.uuid().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+  z.object({
+    type: z.literal("comment_resolve"),
+    roomExternalId: roomExternalIdSchema,
+    commentId: z.uuid(),
+    resolved: z.boolean(),
+    requestId: z.string().max(64).optional(),
   }),
   z.object({
     type: z.literal("ping"),
@@ -65,6 +81,8 @@ export type ClientMessage = z.infer<typeof clientMessageSchema>;
 
 export const serverErrorCodeSchema = z.enum([
   "invalid_message",
+  "invalid_request",
+  "not_found",
   "not_in_room",
   "room_limit_reached",
   "rate_limited",
@@ -83,6 +101,15 @@ export const commentSchema = z.object({
   resolvedAt: z.iso.datetime().nullable(),
 });
 export type Comment = z.infer<typeof commentSchema>;
+
+export const notificationSchema = z.object({
+  id: z.uuid(),
+  type: z.string(),
+  payload: jsonValueSchema,
+  readAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+});
+export type Notification = z.infer<typeof notificationSchema>;
 
 export const serverMessageSchema = z.discriminatedUnion("type", [
   z.object({
@@ -112,11 +139,33 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
     roomExternalId: roomExternalIdSchema,
     seq: z.number().int().nonnegative(),
     comment: commentSchema,
+    /** Present when the comment was created by this client (correlation). */
+    requestId: z.string().max(64).optional(),
+  }),
+  z.object({
+    type: z.literal("comment_updated"),
+    roomExternalId: roomExternalIdSchema,
+    seq: z.number().int().nonnegative(),
+    comment: commentSchema,
+    requestId: z.string().max(64).optional(),
+  }),
+  z.object({
+    type: z.literal("comment_list_result"),
+    roomExternalId: roomExternalIdSchema,
+    requestId: z.string().max(64),
+    items: z.array(commentSchema),
+    nextCursor: z.uuid().optional(),
+  }),
+  z.object({
+    type: z.literal("notification"),
+    notification: notificationSchema,
   }),
   z.object({
     type: z.literal("error"),
     code: serverErrorCodeSchema,
     message: z.string(),
+    /** Set when the error is the outcome of a correlated request. */
+    requestId: z.string().max(64).optional(),
   }),
   z.object({
     type: z.literal("pong"),

@@ -86,12 +86,12 @@ describe("WS /v1/realtime basics", () => {
     }
   });
 
-  it("answers comment_create with an explanatory error (arrives in a later milestone)", async () => {
+  it("rejects comment_create for rooms the connection has not joined", async () => {
     const client = await TestClient.connect(app, token);
     try {
       client.send({ type: "comment_create", roomExternalId: "doc-1", body: "hi" });
       const error = await client.waitFor("error");
-      expect(error.message).toContain("comment_create");
+      expect(error.code).toBe("not_in_room");
     } finally {
       client.close();
     }

@@ -2,6 +2,7 @@ import {
   presenceEntrySchema,
   type Comment,
   type JsonValue,
+  type Notification,
   type PresenceEntry,
   type ServerMessage,
 } from "@synckit/core";
@@ -65,6 +66,13 @@ export class RoomHub {
     return this.deps.redis.incr(this.seqKey(projectId, roomExternalId));
   }
 
+  /** Current seq without consuming one (room_joined snapshots must not create
+   *  gaps in the stream other members observe). */
+  private async currentSeq(projectId: string, roomExternalId: string): Promise<number> {
+    const value = await this.deps.redis.get(this.seqKey(projectId, roomExternalId));
+    return value === null ? 0 : Number(value);
+  }
+
   async join(
     connection: ManagedConnection,
     roomExternalId: string,
@@ -97,7 +105,7 @@ export class RoomHub {
     this.deps.manager.deliver(connection, {
       type: "room_joined",
       roomExternalId,
-      seq: await this.nextSeq(projectId, roomExternalId),
+      seq: await this.currentSeq(projectId, roomExternalId),
       presence: others,
     });
 
@@ -195,12 +203,69 @@ export class RoomHub {
     projectId: string,
     roomExternalId: string,
     comment: Comment,
+    requestId?: string,
   ): Promise<void> {
     await this.publish(this.channel(projectId, roomExternalId), "server", {
       type: "comment_created",
       roomExternalId,
       seq: await this.nextSeq(projectId, roomExternalId),
       comment,
+      ...(requestId !== undefined ? { requestId } : {}),
+    });
+  }
+
+  async publishCommentUpdated(
+    projectId: string,
+    roomExternalId: string,
+    comment: Comment,
+    requestId?: string,
+  ): Promise<void> {
+    await this.publish(this.channel(projectId, roomExternalId), "server", {
+      type: "comment_updated",
+      roomExternalId,
+      seq: await this.nextSeq(projectId, roomExternalId),
+      comment,
+      ...(requestId !== undefined ? { requestId } : {}),
+    });
+  }
+
+  // ─── Per-user channels (notification push) ─────────────────────────────────
+
+  private userChannel(projectId: string, endUserExternalId: string): string {
+    return `user:${projectId}:${endUserExternalId}`;
+  }
+
+  /** Subscribes a connection to its user's notification channel. */
+  async subscribeUser(connection: ManagedConnection): Promise<void> {
+    const channel = this.userChannel(connection.identity.projectId, connection.identity.endUserId);
+    let local = this.members.get(channel);
+    if (!local) {
+      local = new Set();
+      this.members.set(channel, local);
+      await this.deps.subscriber.subscribe(channel);
+    }
+    local.add(connection);
+  }
+
+  async unsubscribeUser(connection: ManagedConnection): Promise<void> {
+    const channel = this.userChannel(connection.identity.projectId, connection.identity.endUserId);
+    const local = this.members.get(channel);
+    local?.delete(connection);
+    if (local && local.size === 0) {
+      this.members.delete(channel);
+      await this.deps.subscriber.unsubscribe(channel);
+    }
+  }
+
+  /** Pushes a notification to every live connection of an end user. */
+  async publishNotification(
+    projectId: string,
+    endUserExternalId: string,
+    notification: Notification,
+  ): Promise<void> {
+    await this.publish(this.userChannel(projectId, endUserExternalId), "server", {
+      type: "notification",
+      notification,
     });
   }
 

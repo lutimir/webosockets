@@ -72,7 +72,14 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
   app.decorate("redis", redis);
 
   // Realtime engine: dedicated Redis connection for pub/sub subscriptions.
-  const subscriber = redis.duplicate();
+  // No ready check (INFO is not allowed in subscriber mode) and unlimited
+  // command retries so subscriptions survive Redis reconnects.
+  const subscriber = new Redis(env.REDIS_URL, {
+    lazyConnect: true,
+    enableReadyCheck: false,
+    maxRetriesPerRequest: null,
+    retryStrategy: (times) => Math.min(times * 200, 2_000),
+  });
   subscriber.on("error", (error) => app.log.warn({ err: error }, "redis subscriber error"));
   const manager = new ConnectionManager({
     maxPerEndUser: env.WS_MAX_CONNECTIONS_PER_END_USER,

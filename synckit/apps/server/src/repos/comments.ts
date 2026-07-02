@@ -39,20 +39,20 @@ export async function getCommentById(db: Db, id: string): Promise<CommentRow | u
  * Distinct authors of a thread (root + replies), used to fan out
  * notifications. Excludes soft-deleted comments.
  */
-export async function listThreadParticipantEndUserIds(
+export async function listThreadParticipants(
   db: Db,
   threadRootId: string,
-): Promise<string[]> {
-  const rows = await db
-    .selectDistinct({ endUserId: comments.endUserId })
+): Promise<{ endUserId: string; externalId: string }[]> {
+  return db
+    .selectDistinct({ endUserId: comments.endUserId, externalId: endUsers.externalId })
     .from(comments)
+    .innerJoin(endUsers, eq(comments.endUserId, endUsers.id))
     .where(
       and(
         or(eq(comments.id, threadRootId), eq(comments.threadId, threadRootId)),
         isNull(comments.deletedAt),
       ),
     );
-  return rows.map((row) => row.endUserId);
 }
 
 export async function roomHasComments(db: Db, roomId: string): Promise<boolean> {

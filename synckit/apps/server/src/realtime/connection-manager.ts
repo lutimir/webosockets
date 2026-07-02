@@ -180,4 +180,14 @@ export class ConnectionManager {
       connection.socket.close(1001, "server shutting down");
     }
   }
+
+  /**
+   * Hard-terminates every socket without a close frame — as an instance crash
+   * or network partition would. Used by chaos/reconnect tests.
+   */
+  terminateAllSockets(): void {
+    for (const connection of this.connections.values()) {
+      connection.socket.terminate();
+    }
+  }
 }

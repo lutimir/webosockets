@@ -4,7 +4,13 @@ import { type WebSocket } from "ws";
 
 import { verifyClientToken } from "../lib/tokens.js";
 import { type ManagedConnection } from "../realtime/connection-manager.js";
-import { recordUsage } from "../repos/index.js";
+import {
+  getRoomByExternalId,
+  listCommentsByRoom,
+  recordUsage,
+  toWireComment,
+} from "../repos/index.js";
+import { createCommentService, resolveCommentService } from "../services/comments.js";
 
 const RATE_VIOLATIONS_BEFORE_CLOSE = 5;
 
@@ -85,13 +91,91 @@ export function realtimeRoutes(app: FastifyInstance): void {
           notInRoom(connection, message.roomExternalId);
         }
         return;
-      case "comment_create":
+      case "comment_create": {
+        if (!connection.joinedRooms.has(message.roomExternalId)) {
+          notInRoom(connection, message.roomExternalId);
+          return;
+        }
+        const result = await createCommentService(
+          { db: app.db, hub, webhooks: app.webhooks },
+          {
+            projectId: connection.identity.projectId,
+            roomExternalId: message.roomExternalId,
+            authorExternalId: connection.identity.endUserId,
+            body: message.body,
+            threadId: message.threadId ?? null,
+            anchor: message.anchor ?? null,
+            ...(message.requestId !== undefined ? { requestId: message.requestId } : {}),
+          },
+        );
+        if (!result.ok) {
+          manager.deliver(connection, {
+            type: "error",
+            code: "invalid_request",
+            message: result.message,
+            ...(message.requestId !== undefined ? { requestId: message.requestId } : {}),
+          });
+        }
+        return;
+      }
+      case "comment_list": {
+        if (!connection.joinedRooms.has(message.roomExternalId)) {
+          notInRoom(connection, message.roomExternalId);
+          return;
+        }
+        const room = await getRoomByExternalId(
+          app.db,
+          connection.identity.projectId,
+          message.roomExternalId,
+        );
+        const page = room
+          ? await listCommentsByRoom(app.db, room.id, {
+              cursor: message.cursor,
+              ...(message.limit !== undefined ? { limit: message.limit } : {}),
+            })
+          : { items: [], nextCursor: undefined };
         manager.deliver(connection, {
-          type: "error",
-          code: "internal_error",
-          message: "comment_create arrives with the REST API in a later milestone",
+          type: "comment_list_result",
+          roomExternalId: message.roomExternalId,
+          requestId: message.requestId,
+          items: page.items.map((item) => toWireComment(item, item.endUserExternalId)),
+          ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
         });
         return;
+      }
+      case "comment_resolve": {
+        if (!connection.joinedRooms.has(message.roomExternalId)) {
+          notInRoom(connection, message.roomExternalId);
+          return;
+        }
+        const room = await getRoomByExternalId(
+          app.db,
+          connection.identity.projectId,
+          message.roomExternalId,
+        );
+        const result = room
+          ? await resolveCommentService(
+              { db: app.db, hub, webhooks: app.webhooks },
+              {
+                projectId: connection.identity.projectId,
+                roomExternalId: message.roomExternalId,
+                roomId: room.id,
+                commentId: message.commentId,
+                resolved: message.resolved,
+                ...(message.requestId !== undefined ? { requestId: message.requestId } : {}),
+              },
+            )
+          : ({ ok: false, code: "not_found", message: "room not found" } as const);
+        if (!result.ok) {
+          manager.deliver(connection, {
+            type: "error",
+            code: "not_found",
+            message: result.message,
+            ...(message.requestId !== undefined ? { requestId: message.requestId } : {}),
+          });
+        }
+        return;
+      }
     }
   }
 
@@ -136,6 +220,7 @@ export function realtimeRoutes(app: FastifyInstance): void {
       connection = undefined;
       try {
         await hub.leaveAll(current);
+        await hub.unsubscribeUser(current);
         manager.unregister(current);
 
         const minutes = Math.max(1, Math.ceil((Date.now() - current.connectedAt) / 60_000));
@@ -172,6 +257,7 @@ export function realtimeRoutes(app: FastifyInstance): void {
       }
 
       connection = result.connection;
+      await hub.subscribeUser(connection);
       request.log.info(
         { connectionId: connection.id, endUserId: identity.endUserId },
         "realtime connection established",
@@ -185,6 +271,9 @@ export function realtimeRoutes(app: FastifyInstance): void {
       if (socket.readyState === socket.CLOSING || socket.readyState === socket.CLOSED) {
         chain = chain.then(cleanup);
       }
-    })();
+    })().catch((error: unknown) => {
+      request.log.error({ err: error }, "failed to establish realtime connection");
+      socket.close(1011, "internal error");
+    });
   });
 }

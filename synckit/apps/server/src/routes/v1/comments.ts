@@ -4,21 +4,13 @@ import { z } from "zod";
 
 import { projectIdOf, requireApiKey, sendApiError } from "../../plugins/api-auth.js";
 import {
-  createComment,
-  createNotification,
   getCommentById,
-  getEndUserByExternalId,
-  getEndUserById,
   getRoomByExternalId,
   listCommentsByRoom,
-  listThreadParticipantEndUserIds,
-  recordUsage,
-  setCommentResolved,
   softDeleteComment,
   toWireComment,
-  upsertEndUser,
-  upsertRoom,
 } from "../../repos/index.js";
+import { createCommentService, resolveCommentService } from "../../services/comments.js";
 
 import {
   commentWireSchema,
@@ -98,72 +90,23 @@ export function commentsRoutes(app: FastifyInstance): void {
       },
     },
     async (request, reply) => {
-      const { db } = request.server;
-      const projectId = projectIdOf(request);
-
-      // Rooms are created lazily — a comment may be the room's first event.
-      const room = await upsertRoom(db, { projectId, externalId: request.params.externalId });
-
-      const author =
-        (await getEndUserByExternalId(db, projectId, request.body.endUserId)) ??
-        (await upsertEndUser(db, { projectId, externalId: request.body.endUserId }));
-
-      if (request.body.threadId) {
-        const root = await getCommentById(db, request.body.threadId);
-        if (!root || root.roomId !== room.id) {
-          return sendApiError(
-            reply,
-            400,
-            "invalid_thread",
-            "threadId does not belong to this room",
-          );
-        }
-        if (root.threadId !== null) {
-          return sendApiError(reply, 400, "invalid_thread", "threadId must point to a thread root");
-        }
-      }
-
-      const comment = await createComment(db, {
-        roomId: room.id,
-        endUserId: author.id,
-        body: request.body.body,
-        threadId: request.body.threadId ?? null,
-        anchor: request.body.anchor ?? null,
-      });
-      const wire = toWireComment(comment, author.externalId);
-
-      // Realtime push to everyone currently in the room.
-      await request.server.realtime.hub.publishCommentCreated(
-        projectId,
-        request.params.externalId,
-        wire,
+      const result = await createCommentService(
+        {
+          db: request.server.db,
+          hub: request.server.realtime.hub,
+          webhooks: request.server.webhooks,
+        },
+        {
+          projectId: projectIdOf(request),
+          roomExternalId: request.params.externalId,
+          authorExternalId: request.body.endUserId,
+          body: request.body.body,
+          threadId: request.body.threadId ?? null,
+          anchor: request.body.anchor ?? null,
+        },
       );
-
-      // Notify other participants of the thread.
-      if (comment.threadId) {
-        const participants = await listThreadParticipantEndUserIds(db, comment.threadId);
-        await Promise.all(
-          participants
-            .filter((endUserId) => endUserId !== author.id)
-            .map((endUserId) =>
-              createNotification(db, {
-                endUserId,
-                type: "comment.replied",
-                payload: {
-                  roomExternalId: request.params.externalId,
-                  threadId: comment.threadId,
-                  commentId: comment.id,
-                  from: author.externalId,
-                },
-              }),
-            ),
-        );
-      }
-
-      await request.server.webhooks.enqueue(projectId, "comment.created", wire);
-      await recordUsage(db, { projectId, kind: "message", quantity: 1 });
-
-      return reply.status(201).send(wire);
+      if (!result.ok) return sendApiError(reply, 400, result.code, result.message);
+      return reply.status(201).send(result.value);
     },
   );
 
@@ -189,20 +132,20 @@ export function commentsRoutes(app: FastifyInstance): void {
       const projectId = projectIdOf(request);
 
       const room = await getRoomByExternalId(db, projectId, request.params.externalId);
-      const existing = room && (await getCommentById(db, request.params.commentId));
-      if (!room || !existing || existing.roomId !== room.id) {
-        return sendApiError(reply, 404, "not_found", "comment not found");
-      }
+      if (!room) return sendApiError(reply, 404, "not_found", "comment not found");
 
-      const updated = await setCommentResolved(db, existing.id, request.body.resolved);
-      if (!updated) return sendApiError(reply, 404, "not_found", "comment not found");
-
-      const author = await getEndUserById(db, updated.endUserId);
-      const wire = toWireComment(updated, author?.externalId ?? "");
-      if (request.body.resolved) {
-        await request.server.webhooks.enqueue(projectId, "comment.resolved", wire);
-      }
-      return wire;
+      const result = await resolveCommentService(
+        { db, hub: request.server.realtime.hub, webhooks: request.server.webhooks },
+        {
+          projectId,
+          roomExternalId: request.params.externalId,
+          roomId: room.id,
+          commentId: request.params.commentId,
+          resolved: request.body.resolved,
+        },
+      );
+      if (!result.ok) return sendApiError(reply, 404, result.code, result.message);
+      return result.value;
     },
   );
 
