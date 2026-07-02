@@ -1,0 +1,7 @@
+{
+  "extends": "@synckit/config/tsconfig.web.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src", "*.config.ts"]
+}

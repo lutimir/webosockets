@@ -1,0 +1,35 @@
+{
+  "name": "synckit",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "eslint .",
+    "typecheck": "turbo run typecheck",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "db:migrate": "pnpm --filter @synckit/server db:migrate",
+    "db:seed": "pnpm --filter @synckit/server db:seed"
+  },
+  "devDependencies": {
+    "@synckit/config": "workspace:*",
+    "eslint": "^9.39.0",
+    "prettier": "^3.8.4",
+    "turbo": "^2.8.2",
+    "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@tailwindcss/oxide",
+      "esbuild",
+      "sharp",
+      "unrs-resolver"
+    ]
+  }
+}
