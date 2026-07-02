@@ -25,10 +25,11 @@ export async function upsertEndUser(db: Db, input: UpsertEndUserInput): Promise<
     })
     .onConflictDoUpdate({
       target: [endUsers.projectId, endUsers.externalId],
+      // Only overwrite fields the caller actually provided.
       set: {
-        displayName: input.displayName ?? null,
-        avatarUrl: input.avatarUrl ?? null,
-        metadata: input.metadata ?? {},
+        ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
+        ...(input.avatarUrl !== undefined ? { avatarUrl: input.avatarUrl } : {}),
+        ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
         updatedAt: new Date(),
       },
     })

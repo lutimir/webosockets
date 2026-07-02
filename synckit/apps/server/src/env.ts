@@ -17,6 +17,13 @@ const envSchema = z.object({
   WS_BACKPRESSURE_SOFT_BYTES: z.coerce.number().int().positive().default(1_048_576),
   WS_BACKPRESSURE_HARD_BYTES: z.coerce.number().int().positive().default(5_242_880),
   PRESENCE_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+  // ─── REST API ──────────────────────────────────────────────────────────────
+  API_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(100),
+  CLIENT_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(3_600),
+  // ─── Webhooks ──────────────────────────────────────────────────────────────
+  WEBHOOK_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(1_000),
+  WEBHOOK_BACKOFF_BASE_MS: z.coerce.number().int().positive().default(2_000),
+  WEBHOOK_MAX_ATTEMPTS: z.coerce.number().int().positive().default(3),
 });
 
 export type Env = z.infer<typeof envSchema>;

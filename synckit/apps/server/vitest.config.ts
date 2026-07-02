@@ -8,5 +8,7 @@ export default defineConfig({
     // Integration tests share one Fastify/Postgres/Redis stack per file; keep
     // files sequential so they never fight over ports or fixtures.
     fileParallelism: false,
+    // Expose gc so the heap-leak test can measure deterministically.
+    poolOptions: { forks: { execArgv: ["--expose-gc"] } },
   },
 });

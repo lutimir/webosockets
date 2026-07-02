@@ -306,7 +306,9 @@ describe("resource cleanup", () => {
       }
 
       // Let the async close chains drain, then verify nothing is retained.
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      for (let i = 0; i < 100 && appA.realtime.manager.connectionCount > 0; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
       expect(appA.realtime.manager.connectionCount).toBe(0);
       expect(appA.realtime.hub.roomCount).toBe(0);
 

@@ -16,6 +16,11 @@ export const planEnum = pgEnum("plan", ["free", "pro", "scale", "enterprise"]);
 export const memberRoleEnum = pgEnum("member_role", ["owner", "admin", "member"]);
 export const environmentEnum = pgEnum("environment", ["dev", "prod"]);
 export const usageKindEnum = pgEnum("usage_kind", ["connection_minutes", "message", "mau"]);
+export const webhookDeliveryStatusEnum = pgEnum("webhook_delivery_status", [
+  "pending",
+  "delivered",
+  "failed",
+]);
 
 const id = () =>
   uuid("id")
@@ -203,6 +208,27 @@ export const webhookEndpoints = pgTable(
   (table) => [index("webhook_endpoints_project_idx").on(table.projectId)],
 );
 
+export const webhookDeliveries = pgTable(
+  "webhook_deliveries",
+  {
+    id: id(),
+    endpointId: uuid("endpoint_id")
+      .notNull()
+      .references(() => webhookEndpoints.id, { onDelete: "cascade" }),
+    event: text("event").notNull(),
+    payload: jsonb("payload").notNull(),
+    status: webhookDeliveryStatusEnum("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    /** When the delivery becomes due; doubles as a lease while processing. */
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    lastError: text("last_error"),
+    responseStatus: integer("response_status"),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [index("webhook_deliveries_due_idx").on(table.status, table.nextAttemptAt)],
+);
+
 export type Organization = typeof organizations.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type OrganizationMember = typeof organizationMembers.$inferSelect;
@@ -214,3 +240,4 @@ export type CommentRow = typeof comments.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;
 export type UsageEvent = typeof usageEvents.$inferSelect;
 export type WebhookEndpoint = typeof webhookEndpoints.$inferSelect;
+export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;

@@ -1,5 +1,5 @@
 import { type Comment, type JsonValue } from "@synckit/core";
-import { and, asc, eq, gt, isNull } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, or } from "drizzle-orm";
 
 import { type Db } from "../db/client.js";
 import { comments, endUsers, type CommentRow } from "../db/schema.js";
@@ -33,6 +33,26 @@ export async function getCommentById(db: Db, id: string): Promise<CommentRow | u
   return db.query.comments.findFirst({
     where: and(eq(comments.id, id), isNull(comments.deletedAt)),
   });
+}
+
+/**
+ * Distinct authors of a thread (root + replies), used to fan out
+ * notifications. Excludes soft-deleted comments.
+ */
+export async function listThreadParticipantEndUserIds(
+  db: Db,
+  threadRootId: string,
+): Promise<string[]> {
+  const rows = await db
+    .selectDistinct({ endUserId: comments.endUserId })
+    .from(comments)
+    .where(
+      and(
+        or(eq(comments.id, threadRootId), eq(comments.threadId, threadRootId)),
+        isNull(comments.deletedAt),
+      ),
+    );
+  return rows.map((row) => row.endUserId);
 }
 
 export async function roomHasComments(db: Db, roomId: string): Promise<boolean> {

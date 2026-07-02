@@ -7,4 +7,5 @@ export * from "./projects.js";
 export * from "./rooms.js";
 export * from "./usage-events.js";
 export * from "./users.js";
+export * from "./webhook-deliveries.js";
 export * from "./webhook-endpoints.js";

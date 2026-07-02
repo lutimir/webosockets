@@ -1,5 +1,6 @@
 import {
   presenceEntrySchema,
+  type Comment,
   type JsonValue,
   type PresenceEntry,
   type ServerMessage,
@@ -178,6 +179,29 @@ export class RoomHub {
       updated: [],
     });
     return true;
+  }
+
+  /** Presence snapshot of a room — used by the REST presence endpoint. */
+  async getPresence(projectId: string, roomExternalId: string): Promise<PresenceEntry[]> {
+    return this.readPresence(projectId, roomExternalId, "");
+  }
+
+  /**
+   * Server-initiated event fan-out (e.g. a comment created via REST) to all
+   * members of a room on every instance. The sender id "server" never matches
+   * a connection id, so nobody is excluded from delivery.
+   */
+  async publishCommentCreated(
+    projectId: string,
+    roomExternalId: string,
+    comment: Comment,
+  ): Promise<void> {
+    await this.publish(this.channel(projectId, roomExternalId), "server", {
+      type: "comment_created",
+      roomExternalId,
+      seq: await this.nextSeq(projectId, roomExternalId),
+      comment,
+    });
   }
 
   /** Called on disconnect: leaves every room the connection was in. */

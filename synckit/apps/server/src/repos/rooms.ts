@@ -1,5 +1,5 @@
 import { type JsonValue } from "@synckit/core";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, gt } from "drizzle-orm";
 
 import { type Db } from "../db/client.js";
 import { rooms, type Room } from "../db/schema.js";
@@ -36,4 +36,28 @@ export async function getRoomByExternalId(
 
 export async function listRoomsByProject(db: Db, projectId: string): Promise<Room[]> {
   return db.query.rooms.findMany({ where: eq(rooms.projectId, projectId) });
+}
+
+export interface RoomPage {
+  items: Room[];
+  nextCursor: string | undefined;
+}
+
+/** Cursor pagination in creation order (uuid v7 ids are time-ordered). */
+export async function listRoomsByProjectPaged(
+  db: Db,
+  projectId: string,
+  options: { cursor?: string | undefined; limit?: number } = {},
+): Promise<RoomPage> {
+  const limit = Math.min(options.limit ?? 50, 100);
+  const items = await db.query.rooms.findMany({
+    where: and(
+      eq(rooms.projectId, projectId),
+      options.cursor ? gt(rooms.id, options.cursor) : undefined,
+    ),
+    orderBy: asc(rooms.id),
+    limit: limit + 1,
+  });
+  const page = items.slice(0, limit);
+  return { items: page, nextCursor: items.length > limit ? page.at(-1)?.id : undefined };
 }

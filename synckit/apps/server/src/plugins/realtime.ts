@@ -130,30 +130,31 @@ export function realtimeRoutes(app: FastifyInstance): void {
       else pending.push([raw, isBinary]);
     });
 
-    socket.on("close", () => {
-      chain = chain
-        .then(async () => {
-          if (!connection) return;
-          await hub.leaveAll(connection);
-          manager.unregister(connection);
+    const cleanup = async () => {
+      if (!connection) return;
+      const current = connection;
+      connection = undefined;
+      try {
+        await hub.leaveAll(current);
+        manager.unregister(current);
 
-          const minutes = Math.max(1, Math.ceil((Date.now() - connection.connectedAt) / 60_000));
-          await recordUsage(app.db, {
-            projectId: connection.identity.projectId,
-            kind: "connection_minutes",
-            quantity: minutes,
-          });
-          connection = undefined;
-        })
-        .catch((error: unknown) => {
-          // Redis/DB may already be closing during shutdown — never let the
-          // cleanup chain produce an unhandled rejection.
-          request.log.warn({ err: error }, "error during realtime connection cleanup");
-          if (connection) {
-            manager.unregister(connection);
-            connection = undefined;
-          }
+        const minutes = Math.max(1, Math.ceil((Date.now() - current.connectedAt) / 60_000));
+        await recordUsage(app.db, {
+          projectId: current.identity.projectId,
+          kind: "connection_minutes",
+          quantity: minutes,
         });
+      } catch (error) {
+        // Redis/DB may already be closing during shutdown — never let the
+        // cleanup chain produce an unhandled rejection, and never leak the
+        // connection slot.
+        request.log.warn({ err: error }, "error during realtime connection cleanup");
+        manager.unregister(current);
+      }
+    };
+
+    socket.on("close", () => {
+      chain = chain.then(cleanup);
     });
 
     void (async () => {
@@ -178,6 +179,12 @@ export function realtimeRoutes(app: FastifyInstance): void {
       ready = true;
       for (const [raw, isBinary] of pending) enqueue(raw, isBinary);
       pending.length = 0;
+
+      // The socket may have closed while the token was being verified — its
+      // close event then ran before `connection` existed, so clean up now.
+      if (socket.readyState === socket.CLOSING || socket.readyState === socket.CLOSED) {
+        chain = chain.then(cleanup);
+      }
     })();
   });
 }
