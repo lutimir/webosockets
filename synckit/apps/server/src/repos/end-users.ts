@@ -1,5 +1,5 @@
 import { type JsonValue } from "@synckit/core";
-import { and, eq } from "drizzle-orm";
+import { and, eq, gte } from "drizzle-orm";
 
 import { type Db } from "../db/client.js";
 import { endUsers, type EndUser } from "../db/schema.js";
@@ -54,4 +54,13 @@ export async function getEndUserById(db: Db, id: string): Promise<EndUser | unde
 
 export async function listEndUsersByProject(db: Db, projectId: string): Promise<EndUser[]> {
   return db.query.endUsers.findMany({ where: eq(endUsers.projectId, projectId) });
+}
+
+/** End users seen (created or refreshed) since the given date — MAU proxy. */
+export async function countActiveEndUsers(db: Db, projectId: string, since: Date): Promise<number> {
+  const rows = await db
+    .select({ id: endUsers.id })
+    .from(endUsers)
+    .where(and(eq(endUsers.projectId, projectId), gte(endUsers.updatedAt, since)));
+  return rows.length;
 }

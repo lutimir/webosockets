@@ -97,6 +97,16 @@ export async function markAttemptFailed(
     .where(eq(webhookDeliveries.id, id));
 }
 
+/** Requeues a settled delivery for immediate retry (dashboard "resend"). */
+export async function resendDelivery(db: Db, id: string): Promise<WebhookDelivery | undefined> {
+  const [row] = await db
+    .update(webhookDeliveries)
+    .set({ status: "pending", nextAttemptAt: new Date(), attempts: 0, lastError: null })
+    .where(eq(webhookDeliveries.id, id))
+    .returning();
+  return row;
+}
+
 export async function getDeliveryById(db: Db, id: string): Promise<WebhookDelivery | undefined> {
   return db.query.webhookDeliveries.findFirst({ where: eq(webhookDeliveries.id, id) });
 }

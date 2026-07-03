@@ -71,3 +71,9 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Install Playwright browser
+        run: pnpm --filter @synckit/dashboard exec playwright install --with-deps chromium
+
+      - name: Dashboard e2e
+        run: pnpm --filter @synckit/dashboard e2e

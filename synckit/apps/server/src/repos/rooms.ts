@@ -34,6 +34,10 @@ export async function getRoomByExternalId(
   });
 }
 
+export async function getRoomById(db: Db, id: string): Promise<Room | undefined> {
+  return db.query.rooms.findFirst({ where: eq(rooms.id, id) });
+}
+
 export async function listRoomsByProject(db: Db, projectId: string): Promise<Room[]> {
   return db.query.rooms.findMany({ where: eq(rooms.projectId, projectId) });
 }

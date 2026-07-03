@@ -20,6 +20,7 @@ import { healthzRoutes } from "./plugins/healthz.js";
 import { realtimeRoutes } from "./plugins/realtime.js";
 import { ConnectionManager } from "./realtime/connection-manager.js";
 import { RoomHub } from "./realtime/room-hub.js";
+import { internalRoutes } from "./routes/internal/index.js";
 import { v1Routes } from "./routes/v1/index.js";
 import { WebhookDispatcher } from "./webhooks/dispatcher.js";
 
@@ -200,6 +201,7 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
   await app.register(healthzRoutes);
   await app.register(realtimeRoutes, { prefix: "/v1" });
   await app.register(v1Routes, { prefix: "/v1" });
+  await app.register(internalRoutes, { prefix: "/internal" });
 
   return app;
 }

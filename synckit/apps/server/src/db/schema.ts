@@ -208,6 +208,38 @@ export const webhookEndpoints = pgTable(
   (table) => [index("webhook_endpoints_project_idx").on(table.projectId)],
 );
 
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: id(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** sha256 hex of the session token; the plaintext lives in the cookie. */
+    tokenHash: text("token_hash").notNull().unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    ...timestamps,
+  },
+  (table) => [index("sessions_user_idx").on(table.userId)],
+);
+
+export const organizationInvites = pgTable(
+  "organization_invites",
+  {
+    id: id(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    role: memberRoleEnum("role").notNull().default("member"),
+    token: text("token").notNull().unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [index("organization_invites_org_idx").on(table.organizationId)],
+);
+
 export const webhookDeliveries = pgTable(
   "webhook_deliveries",
   {
@@ -241,3 +273,5 @@ export type Notification = typeof notifications.$inferSelect;
 export type UsageEvent = typeof usageEvents.$inferSelect;
 export type WebhookEndpoint = typeof webhookEndpoints.$inferSelect;
 export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
+export type Session = typeof sessions.$inferSelect;
+export type OrganizationInvite = typeof organizationInvites.$inferSelect;

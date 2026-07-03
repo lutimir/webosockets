@@ -1,4 +1,4 @@
-import { and, eq, gte, lt, sum } from "drizzle-orm";
+import { and, eq, gte, lt, sql, sum } from "drizzle-orm";
 
 import { type Db } from "../db/client.js";
 import { usageEvents, type UsageEvent } from "../db/schema.js";
@@ -20,6 +20,30 @@ export async function recordUsage(
     .returning();
   if (!row) throw new Error("insert returned no row");
   return row;
+}
+
+/** Daily totals of a usage kind over the trailing `days` days. */
+export async function dailyUsage(
+  db: Db,
+  projectId: string,
+  kind: UsageKind,
+  days: number,
+): Promise<{ day: string; total: number }[]> {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1_000);
+  const day = sql<string>`to_char(date_trunc('day', ${usageEvents.occurredAt}), 'YYYY-MM-DD')`;
+  const rows = await db
+    .select({ day, total: sum(usageEvents.quantity) })
+    .from(usageEvents)
+    .where(
+      and(
+        eq(usageEvents.projectId, projectId),
+        eq(usageEvents.kind, kind),
+        gte(usageEvents.occurredAt, since),
+      ),
+    )
+    .groupBy(day)
+    .orderBy(day);
+  return rows.map((row) => ({ day: row.day, total: Number(row.total ?? 0) }));
 }
 
 export async function sumUsage(

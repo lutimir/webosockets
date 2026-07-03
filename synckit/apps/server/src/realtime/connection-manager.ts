@@ -75,6 +75,11 @@ export class ConnectionManager {
     return this.connections.size;
   }
 
+  /** Live connections of one project on this instance. */
+  connectionCountForProject(projectId: string): number {
+    return this.perProject.get(projectId) ?? 0;
+  }
+
   register(socket: WebSocket, identity: ClientIdentity): RegisterResult {
     const userKey = `${identity.projectId}:${identity.endUserId}`;
     if ((this.perEndUser.get(userKey) ?? 0) >= this.options.maxPerEndUser) {

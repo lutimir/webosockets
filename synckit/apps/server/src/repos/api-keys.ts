@@ -67,6 +67,10 @@ export async function verifyApiKey(db: Db, key: string): Promise<ApiKey | undefi
   });
 }
 
+export async function getApiKeyById(db: Db, id: string): Promise<ApiKey | undefined> {
+  return db.query.apiKeys.findFirst({ where: eq(apiKeys.id, id) });
+}
+
 export async function revokeApiKey(db: Db, id: string): Promise<ApiKey | undefined> {
   const [row] = await db
     .update(apiKeys)

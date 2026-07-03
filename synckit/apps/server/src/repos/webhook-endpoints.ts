@@ -46,6 +46,13 @@ export async function listWebhookEndpointsByProject(
   });
 }
 
+export async function getWebhookEndpointById(
+  db: Db,
+  id: string,
+): Promise<WebhookEndpoint | undefined> {
+  return db.query.webhookEndpoints.findFirst({ where: eq(webhookEndpoints.id, id) });
+}
+
 export async function disableWebhookEndpoint(
   db: Db,
   id: string,
