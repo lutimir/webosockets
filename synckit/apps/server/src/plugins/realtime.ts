@@ -2,6 +2,7 @@ import { CLOSE_CODES, parseClientMessage, type ClientMessage } from "@synckit/co
 import { type FastifyInstance } from "fastify";
 import { type WebSocket } from "ws";
 
+import { decrementConnections, getProjectLimits, incrementConnections } from "../billing/limits.js";
 import { verifyClientToken } from "../lib/tokens.js";
 import { type ManagedConnection } from "../realtime/connection-manager.js";
 import {
@@ -222,6 +223,7 @@ export function realtimeRoutes(app: FastifyInstance): void {
         await hub.leaveAll(current);
         await hub.unsubscribeUser(current);
         manager.unregister(current);
+        await decrementConnections(app.redis, current.identity.projectId);
 
         const minutes = Math.max(1, Math.ceil((Date.now() - current.connectedAt) / 60_000));
         await recordUsage(app.db, {
@@ -250,8 +252,26 @@ export function realtimeRoutes(app: FastifyInstance): void {
         return;
       }
 
+      // Plan enforcement: concurrent connections are counted in Redis so the
+      // limit holds across every instance.
+      const resolved = await getProjectLimits({ db: app.db, redis: app.redis }, identity.projectId);
+      if (!resolved) {
+        socket.close(CLOSE_CODES.UNAUTHORIZED, "unknown project");
+        return;
+      }
+      const globalConnections = await incrementConnections(app.redis, identity.projectId);
+      if (globalConnections > resolved.limits.maxConcurrentConnections) {
+        await decrementConnections(app.redis, identity.projectId);
+        socket.close(
+          CLOSE_CODES.LIMIT_EXCEEDED,
+          `plan connection limit (${resolved.limits.maxConcurrentConnections}) reached`,
+        );
+        return;
+      }
+
       const result = manager.register(socket, identity);
       if (!result.ok) {
+        await decrementConnections(app.redis, identity.projectId);
         socket.close(CLOSE_CODES.LIMIT_EXCEEDED, result.reason);
         return;
       }

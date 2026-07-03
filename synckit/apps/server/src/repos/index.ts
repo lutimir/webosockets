@@ -7,6 +7,7 @@ export * from "./projects.js";
 export * from "./invites.js";
 export * from "./rooms.js";
 export * from "./sessions.js";
+export * from "./stripe-events.js";
 export * from "./usage-events.js";
 export * from "./users.js";
 export * from "./webhook-deliveries.js";

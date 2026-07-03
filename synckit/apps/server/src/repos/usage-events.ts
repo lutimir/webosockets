@@ -22,6 +22,27 @@ export async function recordUsage(
   return row;
 }
 
+/**
+ * Rolls usage_events of the trailing `days` days into usage_daily.
+ * Recomputes whole days, so re-runs are idempotent.
+ */
+export async function rollupUsageDaily(db: Db, days = 2): Promise<void> {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1_000).toISOString();
+  await db.execute(sql`
+    insert into usage_daily (id, project_id, day, kind, total)
+    select gen_random_uuid(),
+           project_id,
+           to_char(date_trunc('day', occurred_at), 'YYYY-MM-DD'),
+           kind,
+           sum(quantity)::int
+    from usage_events
+    where occurred_at >= ${since}::timestamptz
+    group by project_id, to_char(date_trunc('day', occurred_at), 'YYYY-MM-DD'), kind
+    on conflict (project_id, day, kind)
+    do update set total = excluded.total, updated_at = now()
+  `);
+}
+
 /** Daily totals of a usage kind over the trailing `days` days. */
 export async function dailyUsage(
   db: Db,

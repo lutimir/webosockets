@@ -32,7 +32,12 @@ export async function getOrganizationBySlug(
 export async function updateOrganization(
   db: Db,
   id: string,
-  patch: Partial<Pick<Organization, "name" | "plan" | "stripeCustomerId">>,
+  patch: Partial<
+    Pick<
+      Organization,
+      "name" | "plan" | "stripeCustomerId" | "stripeSubscriptionId" | "paymentFailedAt"
+    >
+  >,
 ): Promise<Organization | undefined> {
   const [row] = await db
     .update(organizations)
@@ -40,6 +45,27 @@ export async function updateOrganization(
     .where(eq(organizations.id, id))
     .returning();
   return row;
+}
+
+/** Organizations still on a paid plan whose payment grace window elapsed. */
+export async function listOrganizationsPastGrace(db: Db, graceDays: number) {
+  const cutoff = new Date(Date.now() - graceDays * 24 * 60 * 60 * 1_000);
+  return db.query.organizations.findMany({
+    where: (table, { and, isNotNull, lt, ne }) =>
+      and(
+        isNotNull(table.paymentFailedAt),
+        lt(table.paymentFailedAt, cutoff),
+        ne(table.plan, "free"),
+      ),
+  });
+}
+
+/** All organizations on the given plan with a Stripe customer. */
+export async function listOrganizationsByPlan(db: Db, plan: Organization["plan"]) {
+  return db.query.organizations.findMany({
+    where: (table, { and, eq: eqOp, isNotNull }) =>
+      and(eqOp(table.plan, plan), isNotNull(table.stripeCustomerId)),
+  });
 }
 
 export interface AddMemberInput {

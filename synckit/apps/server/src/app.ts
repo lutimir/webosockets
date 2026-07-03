@@ -14,6 +14,9 @@ import { Redis } from "ioredis";
 import postgres from "postgres";
 import { v7 as uuidv7 } from "uuid";
 
+import { MeteringJob } from "./billing/metering.js";
+import { StripeBillingProvider, type BillingProvider } from "./billing/provider.js";
+import { billingWebhookRoutes } from "./billing/webhook.js";
 import { createDb, type Db } from "./db/client.js";
 import { type Env } from "./env.js";
 import { healthzRoutes } from "./plugins/healthz.js";
@@ -32,6 +35,7 @@ declare module "fastify" {
     redis: Redis;
     realtime: { manager: ConnectionManager; hub: RoomHub };
     webhooks: WebhookDispatcher;
+    billing: { provider: BillingProvider | null; metering: MeteringJob };
   }
 }
 
@@ -112,9 +116,25 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
   webhooks.start();
   app.decorate("webhooks", webhooks);
 
+  // Billing: Stripe when configured, otherwise disabled (tests use a fake).
+  const billingProvider: BillingProvider | null =
+    env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET
+      ? new StripeBillingProvider(env.STRIPE_SECRET_KEY, env.STRIPE_WEBHOOK_SECRET)
+      : null;
+  const metering = new MeteringJob({
+    db,
+    redis,
+    provider: billingProvider,
+    log: app.log,
+    intervalMs: env.METERING_INTERVAL_MS,
+  });
+  metering.start();
+  app.decorate("billing", { provider: billingProvider, metering });
+
   app.addHook("onClose", async () => {
     manager.stop();
     webhooks.stop();
+    metering.stop();
     await Promise.allSettled([subscriber.quit(), sql.end({ timeout: 5 }), redis.quit()]);
   });
 
@@ -125,7 +145,10 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
     max: env.API_RATE_LIMIT_PER_MINUTE,
     timeWindow: 60_000,
     keyGenerator: (request) => request.headers.authorization ?? request.ip,
-    allowList: (request) => request.url === "/healthz" || request.url.startsWith("/v1/realtime"),
+    allowList: (request) =>
+      request.url === "/healthz" ||
+      request.url.startsWith("/v1/realtime") ||
+      request.url.startsWith("/billing/"),
   });
 
   // Request id on every response; audit log for every mutation.
@@ -202,6 +225,7 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
   await app.register(realtimeRoutes, { prefix: "/v1" });
   await app.register(v1Routes, { prefix: "/v1" });
   await app.register(internalRoutes, { prefix: "/internal" });
+  await app.register(billingWebhookRoutes, { prefix: "/billing" });
 
   return app;
 }

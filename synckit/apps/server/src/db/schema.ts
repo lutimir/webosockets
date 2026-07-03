@@ -41,6 +41,9 @@ export const organizations = pgTable("organizations", {
   slug: text("slug").notNull().unique(),
   plan: planEnum("plan").notNull().default("free"),
   stripeCustomerId: text("stripe_customer_id"),
+  stripeSubscriptionId: text("stripe_subscription_id"),
+  /** Set on invoice.payment_failed; 7-day grace before downgrade to free. */
+  paymentFailedAt: timestamp("payment_failed_at", { withTimezone: true }),
   ...timestamps,
 });
 
@@ -208,6 +211,32 @@ export const webhookEndpoints = pgTable(
   (table) => [index("webhook_endpoints_project_idx").on(table.projectId)],
 );
 
+/** Processed Stripe webhook events — the idempotency ledger. */
+export const stripeEvents = pgTable("stripe_events", {
+  /** Stripe event id (evt_…). */
+  id: text("id").primaryKey(),
+  type: text("type").notNull(),
+  processedAt: timestamp("processed_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Hourly rollup of usage_events, one row per project/day/kind. */
+export const usageDaily = pgTable(
+  "usage_daily",
+  {
+    id: id(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    day: text("day").notNull(), // YYYY-MM-DD
+    kind: usageKindEnum("kind").notNull(),
+    total: integer("total").notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("usage_daily_project_day_kind_idx").on(table.projectId, table.day, table.kind),
+  ],
+);
+
 export const sessions = pgTable(
   "sessions",
   {
@@ -274,4 +303,6 @@ export type UsageEvent = typeof usageEvents.$inferSelect;
 export type WebhookEndpoint = typeof webhookEndpoints.$inferSelect;
 export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
+export type StripeEvent = typeof stripeEvents.$inferSelect;
+export type UsageDaily = typeof usageDaily.$inferSelect;
 export type OrganizationInvite = typeof organizationInvites.$inferSelect;

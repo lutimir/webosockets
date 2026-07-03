@@ -22,6 +22,13 @@
       "when": 1783093364763,
       "tag": "0002_far_secret_warriors",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783112880865,
+      "tag": "0003_regular_satana",
+      "breakpoints": true
     }
   ]
 }

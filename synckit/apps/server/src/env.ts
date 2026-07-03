@@ -24,6 +24,10 @@ const envSchema = z.object({
   WEBHOOK_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(1_000),
   WEBHOOK_BACKOFF_BASE_MS: z.coerce.number().int().positive().default(2_000),
   WEBHOOK_MAX_ATTEMPTS: z.coerce.number().int().positive().default(3),
+  // ─── Billing ───────────────────────────────────────────────────────────────
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  METERING_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
 });
 
 export type Env = z.infer<typeof envSchema>;

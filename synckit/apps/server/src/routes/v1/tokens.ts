@@ -2,9 +2,10 @@ import { type FastifyInstance } from "fastify";
 import { type ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 
+import { getProjectLimits } from "../../billing/limits.js";
 import { signClientToken } from "../../lib/tokens.js";
 import { requireApiKey, projectIdOf } from "../../plugins/api-auth.js";
-import { upsertEndUser } from "../../repos/index.js";
+import { countActiveEndUsers, getEndUserByExternalId, upsertEndUser } from "../../repos/index.js";
 
 import { endUserWireSchema, errorResponseSchema, jsonValueSchema } from "./schemas.js";
 
@@ -35,12 +36,45 @@ export function tokensRoutes(app: FastifyInstance): void {
           "automatically via its tokenProvider when a token expires (WS close 4401).",
         tags: ["tokens"],
         body: bodySchema,
-        response: { 200: responseSchema, 401: errorResponseSchema, 403: errorResponseSchema },
+        response: {
+          200: responseSchema,
+          401: errorResponseSchema,
+          402: errorResponseSchema,
+          403: errorResponseSchema,
+        },
       },
     },
-    async (request) => {
+    async (request, reply) => {
       const projectId = projectIdOf(request);
       const input = request.body;
+
+      // MAU enforcement: existing users always pass; NEW users beyond the
+      // plan's included MAU are rejected with 402 + an upgrade link.
+      const existing = await getEndUserByExternalId(
+        request.server.db,
+        projectId,
+        input.externalUserId,
+      );
+      if (!existing) {
+        const resolved = await getProjectLimits(
+          { db: request.server.db, redis: request.server.redis },
+          projectId,
+        );
+        if (resolved) {
+          const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000);
+          const mau = await countActiveEndUsers(request.server.db, projectId, monthAgo);
+          if (mau >= resolved.limits.maxMau) {
+            return reply.status(402).send({
+              error: {
+                code: "payment_required",
+                message:
+                  `monthly active user limit (${resolved.limits.maxMau}) reached — ` +
+                  `upgrade at ${request.server.env.DASHBOARD_ORIGIN}/settings/billing`,
+              },
+            });
+          }
+        }
+      }
 
       const endUser = await upsertEndUser(request.server.db, {
         projectId,

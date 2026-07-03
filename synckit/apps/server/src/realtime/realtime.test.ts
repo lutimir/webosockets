@@ -39,7 +39,11 @@ beforeAll(async () => {
   await appA.listen({ port: 0, host: "127.0.0.1" });
   await appB.listen({ port: 0, host: "127.0.0.1" });
 
-  const org = await createOrganization(db, { name: "RT", slug: "realtime-test-org" });
+  const org = await createOrganization(db, {
+    name: "RT",
+    slug: "realtime-test-org",
+    plan: "scale",
+  });
   const project = await createProject(db, {
     organizationId: org.id,
     name: "RT",

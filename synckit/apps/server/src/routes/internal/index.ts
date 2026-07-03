@@ -1,9 +1,11 @@
 import { timingSafeEqual } from "node:crypto";
 
+import { PLANS, type PlanId } from "@synckit/core";
 import { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { type ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 
+import { currentConnections, effectivePlanOf, PAYMENT_GRACE_DAYS } from "../../billing/limits.js";
 import { type Organization, type Project, type User } from "../../db/schema.js";
 import { hashPassword, verifyPassword } from "../../lib/password.js";
 import {
@@ -227,8 +229,18 @@ export function internalRoutes(app: FastifyInstance): void {
         }),
       },
     },
-    withSession(async (context, request) => {
+    withSession(async (context, request, reply) => {
       const body = request.body as { name: string; environment: "dev" | "prod" };
+      const plan = PLANS[effectivePlanOf(context.organization)];
+      const existing = await listProjectsByOrganization(app.db, context.organization.id);
+      if (plan.maxProjects !== null && existing.length >= plan.maxProjects) {
+        return reply.status(402).send({
+          error: {
+            code: "payment_required",
+            message: `your plan allows ${plan.maxProjects} project(s) — upgrade to add more`,
+          },
+        });
+      }
       const project = await createProject(app.db, {
         organizationId: context.organization.id,
         name: body.name,
@@ -497,6 +509,113 @@ export function internalRoutes(app: FastifyInstance): void {
       }
       await resendDelivery(app.db, id);
       return { ok: true };
+    }),
+  );
+
+  // ─── Billing ────────────────────────────────────────────────────────────────
+
+  routes.get(
+    "/billing",
+    { schema: { hide: true } },
+    withSession(async (context) => {
+      const organization = context.organization;
+      const effectivePlan = effectivePlanOf(organization);
+      const limits = PLANS[effectivePlan];
+
+      const projects = await listProjectsByOrganization(app.db, organization.id);
+      const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000);
+      let mau = 0;
+      let connections = 0;
+      for (const project of projects) {
+        mau += await countActiveEndUsers(app.db, project.id, monthAgo);
+        connections += await currentConnections(app.redis, project.id);
+      }
+
+      const provider = app.billing.provider;
+      const invoices =
+        provider && organization.stripeCustomerId
+          ? await provider.listInvoices(organization.stripeCustomerId).catch(() => [])
+          : [];
+
+      const grace = organization.paymentFailedAt
+        ? {
+            failedAt: organization.paymentFailedAt.toISOString(),
+            daysLeft: Math.max(
+              0,
+              PAYMENT_GRACE_DAYS -
+                Math.floor(
+                  (Date.now() - organization.paymentFailedAt.getTime()) / (24 * 60 * 60 * 1_000),
+                ),
+            ),
+          }
+        : null;
+
+      return {
+        billingEnabled: provider !== null,
+        plan: organization.plan,
+        effectivePlan,
+        grace,
+        usage: {
+          mau,
+          mauLimit: limits.maxMau,
+          connections,
+          connectionsLimit: limits.maxConcurrentConnections,
+          projects: projects.length,
+          projectsLimit: limits.maxProjects,
+        },
+        invoices,
+      };
+    }),
+  );
+
+  routes.post(
+    "/billing/checkout",
+    { schema: { hide: true, body: z.object({ plan: z.enum(["pro", "scale"]) }) } },
+    withSession(async (context, request, reply) => {
+      const provider = app.billing.provider;
+      if (!provider) {
+        return reply
+          .status(503)
+          .send({ error: { code: "billing_disabled", message: "Stripe is not configured" } });
+      }
+      const body = request.body as { plan: PlanId };
+      const customerId =
+        context.organization.stripeCustomerId ??
+        (await provider.ensureCustomer({
+          organizationId: context.organization.id,
+          email: context.user.email,
+          name: context.organization.name,
+        }));
+      if (customerId !== context.organization.stripeCustomerId) {
+        await updateOrganization(app.db, context.organization.id, { stripeCustomerId: customerId });
+      }
+      const billingUrl = `${app.env.DASHBOARD_ORIGIN}/settings/billing`;
+      const session = await provider.createCheckoutSession({
+        customerId,
+        organizationId: context.organization.id,
+        plan: body.plan,
+        successUrl: `${billingUrl}?checkout=success`,
+        cancelUrl: `${billingUrl}?checkout=cancelled`,
+      });
+      return { url: session.url };
+    }),
+  );
+
+  routes.post(
+    "/billing/portal",
+    { schema: { hide: true } },
+    withSession(async (context, _request, reply) => {
+      const provider = app.billing.provider;
+      if (!provider || !context.organization.stripeCustomerId) {
+        return reply
+          .status(503)
+          .send({ error: { code: "billing_disabled", message: "no billing account" } });
+      }
+      const session = await provider.createPortalSession(
+        context.organization.stripeCustomerId,
+        `${app.env.DASHBOARD_ORIGIN}/settings/billing`,
+      );
+      return { url: session.url };
     }),
   );
 
