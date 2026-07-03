@@ -176,7 +176,17 @@ export class SyncKitClient {
       throw new Error("no WebSocket implementation available; pass options.WebSocketImpl");
     }
 
-    const ws = new WebSocketImpl(`${this.options.url}?token=${encodeURIComponent(token)}`);
+    let ws: InstanceType<WebSocketConstructor>;
+    try {
+      ws = new WebSocketImpl(`${this.options.url}?token=${encodeURIComponent(token)}`);
+    } catch (error) {
+      this.emitter.emit("error", {
+        code: "websocket_construct_failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      this.scheduleReconnect();
+      return;
+    }
     this.socket = { ws, generation };
 
     ws.addEventListener("open", () => {
