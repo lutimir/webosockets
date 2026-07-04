@@ -1,0 +1,186 @@
+/* ===== Groš — API + statický server (čistý node:http, žiadne závislosti) =====
+ * Spustenie:  node server/server.js   (z priečinka apps/gros)
+ * Port:       GROS_PORT, default 8080
+ */
+"use strict";
+
+const http = require("node:http");
+const fs = require("node:fs");
+const path = require("node:path");
+const db = require("./db");
+
+const PORT = parseInt(process.env.GROS_PORT, 10) || 8080;
+const STATIC_ROOT = path.resolve(__dirname, "..");
+const SLUG_RE = /^[a-z0-9-]{2,30}$/;
+const RESERVED_SLUGS = new Set(["api", "app", "admin", "www", "gros"]);
+
+const MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+};
+
+/* ---------- helpers ---------- */
+const json = (res, code, data) => {
+  const body = JSON.stringify(data);
+  res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(body);
+};
+
+const readBody = (req) => new Promise((resolve, reject) => {
+  let size = 0;
+  const chunks = [];
+  req.on("data", (c) => {
+    size += c.length;
+    if (size > 64 * 1024) { reject(new Error("body too large")); req.destroy(); return; }
+    chunks.push(c);
+  });
+  req.on("end", () => {
+    try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks)) : {}); }
+    catch { reject(new Error("invalid json")); }
+  });
+  req.on("error", reject);
+});
+
+const getCookie = (req, name) => {
+  const m = (req.headers.cookie || "").match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
+  return m ? m[1] : null;
+};
+
+const setSessionCookie = (res, token) => {
+  res.setHeader("Set-Cookie",
+    token
+      ? `gros_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${30 * 86400}`
+      : `gros_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
+};
+
+const cleanStr = (v, max) => String(v ?? "").trim().slice(0, max);
+
+/* ---------- API ---------- */
+async function handleApi(req, res, url) {
+  const seg = url.pathname.split("/").filter(Boolean); // ["api", ...]
+  const sessionSlug = db.getSession(getCookie(req, "gros_session"));
+
+  // GET /api/health
+  if (req.method === "GET" && url.pathname === "/api/health")
+    return json(res, 200, { ok: true, service: "gros" });
+
+  // GET /api/me
+  if (req.method === "GET" && url.pathname === "/api/me")
+    return json(res, 200, { slug: sessionSlug });
+
+  // POST /api/register
+  if (req.method === "POST" && url.pathname === "/api/register") {
+    const b = await readBody(req);
+    const slug = cleanStr(b.slug, 30).toLowerCase();
+    const name = cleanStr(b.name, 40);
+    const password = String(b.password ?? "");
+    if (!SLUG_RE.test(slug) || RESERVED_SLUGS.has(slug))
+      return json(res, 400, { error: "Neplatná adresa stránky" });
+    if (!name) return json(res, 400, { error: "Chýba meno" });
+    if (password.length < 6) return json(res, 400, { error: "Heslo musí mať aspoň 6 znakov" });
+    if (db.getCreator(slug)) return json(res, 409, { error: "Táto adresa je už obsadená" });
+
+    const target = Number(b.goal?.target);
+    db.createCreator({
+      slug, name, password,
+      emoji: cleanStr(b.emoji, 8) || "🎨",
+      tagline: cleanStr(b.tagline, 200) || "Podpor moju tvorbu grošom!",
+      goal: b.goal?.title && target >= 10 && target <= 100000
+        ? { title: cleanStr(b.goal.title, 60), target }
+        : null,
+    });
+    setSessionCookie(res, db.createSession(slug));
+    return json(res, 201, { slug });
+  }
+
+  // POST /api/login
+  if (req.method === "POST" && url.pathname === "/api/login") {
+    const b = await readBody(req);
+    const slug = cleanStr(b.slug, 30).toLowerCase();
+    if (!db.checkLogin(slug, String(b.password ?? "")))
+      return json(res, 401, { error: "Nesprávna adresa alebo heslo" });
+    setSessionCookie(res, db.createSession(slug));
+    return json(res, 200, { slug });
+  }
+
+  // POST /api/logout
+  if (req.method === "POST" && url.pathname === "/api/logout") {
+    const token = getCookie(req, "gros_session");
+    if (token) db.deleteSession(token);
+    setSessionCookie(res, null);
+    return json(res, 200, { ok: true });
+  }
+
+  // /api/creators/:slug[/tips]
+  if (seg[1] === "creators" && seg[2]) {
+    const slug = seg[2].toLowerCase();
+    if (!SLUG_RE.test(slug)) return json(res, 400, { error: "Neplatný slug" });
+    const creator = db.getCreator(slug);
+    if (!creator) return json(res, 404, { error: "Tvorca neexistuje" });
+
+    // GET /api/creators/:slug
+    if (req.method === "GET" && seg.length === 3)
+      return json(res, 200, creator);
+
+    // POST /api/creators/:slug/tips
+    if (req.method === "POST" && seg[3] === "tips") {
+      const b = await readBody(req);
+      const amount = Math.round(Number(b.amount) * 100) / 100;
+      if (!(amount >= 0.5 && amount <= 10000))
+        return json(res, 400, { error: "Suma musí byť 0,50 – 10 000 €" });
+      db.addTip(slug, {
+        name: cleanStr(b.name, 40) || "Anonym",
+        amount,
+        msg: cleanStr(b.msg, 240),
+        monthly: !!b.monthly,
+      });
+      return json(res, 201, db.getCreator(slug));
+    }
+  }
+
+  return json(res, 404, { error: "Not found" });
+}
+
+/* ---------- static ---------- */
+function serveStatic(req, res, url) {
+  let rel = decodeURIComponent(url.pathname);
+  if (rel === "/") rel = "/index.html";
+  const file = path.join(STATIC_ROOT, rel);
+  if (!file.startsWith(STATIC_ROOT + path.sep) || rel.includes("\0"))
+    return json(res, 400, { error: "Bad path" });
+
+  fs.readFile(file, (err, data) => {
+    if (err) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("404 — skús /index.html alebo /app.html");
+    }
+    res.writeHead(200, { "Content-Type": MIME[path.extname(file)] || "application/octet-stream" });
+    res.end(data);
+  });
+}
+
+/* ---------- server ---------- */
+db.seedDemo();
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  try {
+    if (url.pathname.startsWith("/api/")) await handleApi(req, res, url);
+    else if (req.method === "GET") serveStatic(req, res, url);
+    else json(res, 405, { error: "Method not allowed" });
+  } catch (e) {
+    json(res, 400, { error: e.message || "Bad request" });
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`🪙 Groš beží na http://localhost:${PORT}`);
+  console.log(`   landing:  http://localhost:${PORT}/`);
+  console.log(`   appka:    http://localhost:${PORT}/app.html`);
+  console.log(`   demo:     http://localhost:${PORT}/app.html#c/demo`);
+});

@@ -1,44 +1,17 @@
-/* ===== Groš — demo SPA =====
- * Celý stav žije v localStorage. Platby sú simulované —
- * v produkcii sa checkout() vymení za Stripe Checkout session.
+/* ===== Groš — SPA =====
+ * Store vrstva má dve implementácie:
+ *  - RemoteStore: hovorí s Groš API (server/server.js, SQLite)
+ *  - LocalStore:  demo režim v localStorage, keď appka beží bez backendu
+ * Výber prebehne automaticky cez GET /api/health.
+ * Platby sú simulované — checkout() sa v produkcii vymení za Stripe.
  */
 (() => {
   "use strict";
 
   const LS_KEY = "gros.v1";
   const app = document.getElementById("app");
-
-  /* ---------- state ---------- */
-  const seed = () => ({
-    creators: {
-      demo: {
-        slug: "demo",
-        name: "Miško Pixel",
-        emoji: "🎮",
-        tagline: "Robím indie webové hry a návody, ako si spraviť vlastnú. Každý groš ide na kávu a serverovňu.",
-        goal: { title: "Nový herný server", target: 300 },
-        pro: true,
-        tips: [
-          { name: "Zuzka", amount: 5, msg: "Curling hra je super, hrali sme ju celý večer! 🥌", monthly: false, ts: Date.now() - 86400000 * 2 },
-          { name: "Anonym", amount: 15, msg: "Len tak ďalej 💪", monthly: false, ts: Date.now() - 86400000 * 5 },
-          { name: "Peter K.", amount: 3, msg: "", monthly: true, ts: Date.now() - 86400000 * 9 },
-          { name: "Lucia", amount: 10, msg: "Za návod na websockety — konečne to chápem!", monthly: false, ts: Date.now() - 86400000 * 14 },
-        ],
-      },
-    },
-    me: null, // slug prihláseného tvorcu
-  });
-
-  const load = () => {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (raw) return JSON.parse(raw);
-    } catch (e) { /* poškodené dáta -> reset */ }
-    return seed();
-  };
-
-  let state = load();
-  const save = () => localStorage.setItem(LS_KEY, JSON.stringify(state));
+  let store = null;
+  let me = null; // slug prihláseného tvorcu (cache pre synchrónny routing)
 
   /* ---------- utils ---------- */
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
@@ -78,18 +51,99 @@
     }
   };
 
+  /* ================= RemoteStore — Groš API ================= */
+  const api = async (path, body) => {
+    const r = await fetch("/api" + path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || "Chyba servera (" + r.status + ")");
+    return j;
+  };
+
+  const RemoteStore = {
+    mode: "remote",
+    async init() { me = (await api("/me")).slug; },
+    async getCreator(slug) {
+      try { return await api("/creators/" + encodeURIComponent(slug)); }
+      catch { return null; }
+    },
+    async register(data) { me = (await api("/register", data)).slug; },
+    async login(slug, password) { me = (await api("/login", { slug, password })).slug; },
+    async logout() { await api("/logout", {}); me = null; },
+    async addTip(slug, tip) { return api("/creators/" + encodeURIComponent(slug) + "/tips", tip); },
+  };
+
+  /* ================= LocalStore — demo v prehliadači ================= */
+  const seed = () => ({
+    creators: {
+      demo: {
+        slug: "demo",
+        name: "Miško Pixel",
+        emoji: "🎮",
+        tagline: "Robím indie webové hry a návody, ako si spraviť vlastnú. Každý groš ide na kávu a serverovňu.",
+        goal: { title: "Nový herný server", target: 300 },
+        tips: [
+          { name: "Zuzka", amount: 5, msg: "Curling hra je super, hrali sme ju celý večer! 🥌", monthly: false, ts: Date.now() - 86400000 * 2 },
+          { name: "Anonym", amount: 15, msg: "Len tak ďalej 💪", monthly: false, ts: Date.now() - 86400000 * 5 },
+          { name: "Peter K.", amount: 3, msg: "", monthly: true, ts: Date.now() - 86400000 * 9 },
+          { name: "Lucia", amount: 10, msg: "Za návod na websockety — konečne to chápem!", monthly: false, ts: Date.now() - 86400000 * 14 },
+        ],
+      },
+    },
+    me: null,
+  });
+
+  const LocalStore = {
+    mode: "local",
+    state: null,
+    save() { localStorage.setItem(LS_KEY, JSON.stringify(this.state)); },
+    async init() {
+      try { this.state = JSON.parse(localStorage.getItem(LS_KEY)) || seed(); }
+      catch { this.state = seed(); }
+      me = this.state.me;
+    },
+    async getCreator(slug) { return this.state.creators[slug] ?? null; },
+    async register(data) {
+      if (this.state.creators[data.slug]) throw new Error("Táto adresa je už obsadená");
+      this.state.creators[data.slug] = {
+        slug: data.slug, name: data.name, emoji: data.emoji,
+        tagline: data.tagline, goal: data.goal, tips: [],
+      };
+      this.state.me = me = data.slug;
+      this.save();
+    },
+    async login(slug) {
+      if (!this.state.creators[slug]) throw new Error("Tvorca neexistuje");
+      this.state.me = me = slug; // demo režim — bez hesla
+      this.save();
+    },
+    async logout() { this.state.me = me = null; this.save(); },
+    async addTip(slug, tip) {
+      const c = this.state.creators[slug];
+      c.tips.unshift({ ...tip, ts: Date.now() });
+      this.save();
+      return c;
+    },
+  };
+
   /* ---------- router ---------- */
-  const route = () => {
+  async function route() {
     const h = location.hash.slice(1) || "home";
-    document.getElementById("nav-dash").hidden = !state.me;
-    document.getElementById("nav-cta").textContent = state.me ? "Moja stránka" : "Vytvoriť stránku";
-    document.getElementById("nav-cta").href = state.me ? "#c/" + state.me : "#onboard";
+    document.getElementById("nav-dash").hidden = !me;
+    const cta = document.getElementById("nav-cta");
+    cta.textContent = me ? "Moja stránka" : "Vytvoriť stránku";
+    cta.href = me ? "#c/" + me : "#onboard";
 
     if (h.startsWith("c/")) return renderCreator(h.slice(2));
     if (h === "onboard") return renderOnboard();
+    if (h === "login") return renderLogin();
     if (h === "dash") return renderDash();
     return renderHome();
-  };
+  }
 
   /* ---------- views ---------- */
   function renderHome() {
@@ -102,16 +156,17 @@
       <div class="grid grid-3">
         <a class="card" href="#c/demo"><div class="card-icon">🎮</div><h3>Demo stránka tvorcu</h3><p>Pozri, ako vyzerá stránka a skús prispieť.</p></a>
         <a class="card" href="#onboard"><div class="card-icon">✨</div><h3>Vytvor si vlastnú</h3><p>Za dve minúty máš svoju stránku podpory.</p></a>
-        <a class="card" href="index.html"><div class="card-icon">🏠</div><h3>Landing page</h3><p>Funkcie, cenník a widget.</p></a>
+        <a class="card" href="#login"><div class="card-icon">🔑</div><h3>Prihlásenie</h3><p>Už máš stránku? Prihlás sa do dashboardu.</p></a>
       </div>`;
   }
 
   function renderOnboard() {
     const emojis = ["🎨", "🎮", "🎵", "✍️", "📷", "🧑‍💻", "🎙️", "🧵"];
+    const remote = store.mode === "remote";
     app.innerHTML = `
       <div class="creator-hero">
         <h1>Vytvor si stránku tvorcu</h1>
-        <p class="tagline">Dve minúty a môžeš prijímať príspevky.</p>
+        <p class="tagline">Dve minúty a môžeš prijímať príspevky. Máš už účet? <a href="#login" style="color:var(--gold)">Prihlás sa</a>.</p>
       </div>
       <form class="onboard-card" id="onboard-form">
         <div class="field">
@@ -122,6 +177,11 @@
           <label>Adresa stránky</label>
           <input name="slug" required maxlength="30" pattern="[a-z0-9\\-]+" placeholder="misko-pixel">
           <div class="hint">gros.app/<b id="slug-echo">tvoje-meno</b> — malé písmená, čísla a pomlčky</div>
+        </div>
+        <div class="field">
+          <label>Heslo</label>
+          <input name="password" type="password" ${remote ? 'required minlength="6"' : ""} maxlength="100" placeholder="${remote ? "Aspoň 6 znakov" : "V demo režime nepovinné"}" autocomplete="new-password">
+          <div class="hint">Na prihlásenie do tvojho dashboardu</div>
         </div>
         <div class="field">
           <label>Avatar</label>
@@ -159,35 +219,68 @@
       document.getElementById("slug-echo").textContent = form.slug.value || "tvoje-meno";
     });
 
-    form.addEventListener("submit", (ev) => {
+    form.addEventListener("submit", async (ev) => {
       ev.preventDefault();
-      const slug = form.slug.value.trim();
-      if (state.creators[slug] && slug !== state.me) {
-        toast("⚠️ Táto adresa je už obsadená");
+      const target = parseInt(form.goalTarget.value, 10);
+      try {
+        await store.register({
+          slug: form.slug.value.trim(),
+          name: form.name.value.trim(),
+          password: form.password.value,
+          emoji,
+          tagline: form.tagline.value.trim() || "Podpor moju tvorbu grošom!",
+          goal: form.goalTitle.value.trim() && target > 0
+            ? { title: form.goalTitle.value.trim(), target }
+            : null,
+        });
+      } catch (e) {
+        toast("⚠️ " + e.message);
         return;
       }
-      const target = parseInt(form.goalTarget.value, 10);
-      state.creators[slug] = {
-        slug,
-        name: form.name.value.trim(),
-        emoji,
-        tagline: form.tagline.value.trim() || "Podpor moju tvorbu grošom!",
-        goal: form.goalTitle.value.trim() && target > 0
-          ? { title: form.goalTitle.value.trim(), target }
-          : null,
-        pro: false,
-        tips: [],
-      };
-      state.me = slug;
-      save();
       confetti();
       toast("🎉 Stránka vytvorená!");
-      location.hash = "c/" + slug;
+      location.hash = "c/" + me;
     });
   }
 
-  function renderCreator(slug) {
-    const c = state.creators[slug];
+  function renderLogin() {
+    const local = store.mode === "local";
+    app.innerHTML = `
+      <div class="creator-hero">
+        <h1>Prihlásenie</h1>
+        <p class="tagline">${local ? "Demo režim — stačí adresa stránky, heslo sa nekontroluje." : "Prihlás sa do svojho dashboardu."}</p>
+      </div>
+      <form class="onboard-card" id="login-form">
+        <div class="field">
+          <label>Adresa stránky</label>
+          <input name="slug" required maxlength="30" placeholder="misko-pixel" autocomplete="username">
+        </div>
+        <div class="field">
+          <label>Heslo</label>
+          <input name="password" type="password" ${local ? "" : "required"} maxlength="100" autocomplete="current-password">
+        </div>
+        <button class="btn btn-primary btn-block btn-lg" type="submit">🔑 Prihlásiť sa</button>
+        <p style="margin-top:16px;text-align:center;font-size:0.9rem;color:var(--text-dim)">
+          Nemáš účet? <a href="#onboard" style="color:var(--gold)">Vytvor si stránku</a>
+        </p>
+      </form>`;
+
+    document.getElementById("login-form").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const f = ev.target;
+      try {
+        await store.login(f.slug.value.trim().toLowerCase(), f.password.value);
+      } catch (e) {
+        toast("⚠️ " + e.message);
+        return;
+      }
+      toast("👋 Vitaj späť!");
+      location.hash = "dash";
+    });
+  }
+
+  async function renderCreator(slug) {
+    const c = await store.getCreator(slug);
     if (!c) {
       app.innerHTML = `<div class="creator-hero"><div class="creator-avatar">😢</div>
         <h1>Tvorca neexistuje</h1><p class="tagline">Skús <a href="#c/demo" style="color:var(--gold)">demo stránku</a>.</p></div>`;
@@ -296,22 +389,25 @@
     overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
     overlay.querySelector(".close-link").addEventListener("click", close);
 
-    overlay.querySelectorAll(".pay-method").forEach((b) => b.addEventListener("click", () => {
+    overlay.querySelectorAll(".pay-method").forEach((b) => b.addEventListener("click", async () => {
       b.textContent = "⏳ Spracúvam…";
-      setTimeout(() => {
-        creator.tips.push({ ...tip, ts: Date.now() });
-        save();
+      try {
+        await store.addTip(creator.slug, tip);
+      } catch (e) {
         close();
-        confetti();
-        toast(`🎉 Ďakujeme! ${eur(tip.amount)} pre ${creator.name}`);
-        route(); // refresh steny a súčtov
-      }, 900);
+        toast("⚠️ " + e.message);
+        return;
+      }
+      close();
+      confetti();
+      toast(`🎉 Ďakujeme! ${eur(tip.amount)} pre ${creator.name}`);
+      route(); // refresh steny a súčtov
     }));
   }
 
-  function renderDash() {
-    const c = state.me && state.creators[state.me];
-    if (!c) { location.hash = "onboard"; return; }
+  async function renderDash() {
+    const c = me && await store.getCreator(me);
+    if (!c) { location.hash = "login"; return; }
     const sum = total(c);
     const monthly = c.tips.filter((t) => t.monthly).reduce((s, t) => s + t.amount, 0);
 
@@ -329,7 +425,10 @@
     app.innerHTML = `
       <div class="dash-head">
         <h1>${c.emoji} Ahoj, ${esc(c.name)}!</h1>
-        <a class="btn btn-sm btn-ghost" href="#c/${c.slug}">Moja verejná stránka →</a>
+        <div>
+          <a class="btn btn-sm btn-ghost" href="#c/${c.slug}">Moja verejná stránka →</a>
+          <button class="btn btn-sm btn-ghost" id="logout-btn">Odhlásiť</button>
+        </div>
       </div>
       <div class="stat-row">
         <div class="stat"><div class="stat-v">${eur(sum)}</div><div class="stat-l">celkom vyzbierané</div></div>
@@ -357,6 +456,13 @@
         </div>
       </div>`;
 
+    document.getElementById("logout-btn").addEventListener("click", async () => {
+      await store.logout();
+      toast("👋 Odhlásený");
+      location.hash = "";
+      route();
+    });
+
     const copy = (id, label) => document.getElementById(id).addEventListener("click", () => {
       navigator.clipboard.writeText(document.getElementById(label).value)
         .then(() => toast("📋 Skopírované!"))
@@ -366,6 +472,23 @@
     copy("copy-widget", "widget-code");
   }
 
-  window.addEventListener("hashchange", route);
-  route();
+  /* ---------- boot ---------- */
+  (async () => {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 1500);
+      const r = await fetch("/api/health", { signal: ctrl.signal });
+      clearTimeout(t);
+      store = r.ok && (await r.json()).service === "gros" ? RemoteStore : LocalStore;
+    } catch {
+      store = LocalStore;
+    }
+    await store.init();
+    const foot = document.querySelector(".footer p");
+    if (foot) foot.textContent = store.mode === "remote"
+      ? "🪙 Groš — beží na Groš API (Node + SQLite). Platby sú simulované; produkčná verzia napojí Stripe."
+      : "🪙 Groš — demo beží celé v prehliadači (localStorage). Platby sú simulované; produkčná verzia napojí Stripe.";
+    window.addEventListener("hashchange", route);
+    route();
+  })();
 })();
