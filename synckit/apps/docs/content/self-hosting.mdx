@@ -1,0 +1,45 @@
+# Self-hosting
+
+SyncKit is a standard Node 22 + Postgres 16 + Redis 7 stack. Everything
+below ships in the repo — see
+[`DEPLOY.md`](https://github.com/lutimir/webosockets/blob/main/synckit/DEPLOY.md)
+for the full runbook (Hetzner, Fly.io, backups, rolling deploys).
+
+## One-command stack
+
+```bash
+cp .env.prod.example .env   # real secrets!
+docker compose -f docker-compose.prod.yml up --build
+```
+
+brings up: Postgres + Redis (persistent volumes) → one-shot migrations →
+**two API instances** → nginx load balancer (`:8080`) → dashboard
+(`:3000`) → demo board (`:5173`).
+
+## The parts
+
+| Component | Image                       | Notes                                         |
+| --------- | --------------------------- | --------------------------------------------- |
+| API       | `apps/server/Dockerfile`    | Distroless, non-root, `/healthz` + `/metrics` |
+| Dashboard | `apps/dashboard/Dockerfile` | Next.js standalone, talks to `/internal` only |
+| Demo      | `apps/demo/Dockerfile`      | Static build + token-minting sidecar          |
+| LB        | nginx (`infra/nginx.conf`)  | WS upgrade, blocks `/internal` & `/metrics`   |
+
+## Configuration
+
+Required in production: `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`,
+`INTERNAL_API_SECRET`, `DASHBOARD_ORIGIN`. Everything else has sane
+defaults (`apps/server/src/env.ts` is the single source of truth —
+heartbeats, rate limits, backpressure thresholds, webhook retry policy are
+all tunable).
+
+## Scaling notes
+
+- Instances are stateless: add more `server-*` replicas behind the LB, no
+  sticky sessions (chaos-verified — clients reconnect anywhere in under 5 s).
+- Redis is the fan-out bus; a single node handles tens of thousands of
+  msg/s. Scale reads before you shard rooms.
+- Postgres holds durable data only (comments, users, webhooks, usage) —
+  presence traffic never touches it.
+- Measured reference numbers live in
+  [`load/RESULTS.md`](https://github.com/lutimir/webosockets/blob/main/synckit/load/RESULTS.md).

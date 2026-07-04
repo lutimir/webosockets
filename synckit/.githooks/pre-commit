@@ -1,0 +1,24 @@
+#!/bin/sh
+# SyncKit pre-commit: formatting gate + secret-file guard.
+# Wire it up once with: git config core.hooksPath synckit/.githooks
+set -e
+
+repo_root=$(git rev-parse --show-toplevel)
+staged=$(git diff --cached --name-only --diff-filter=ACMR -- 'synckit/**' | grep -v 'pnpm-lock.yaml' || true)
+[ -z "$staged" ] && exit 0
+
+# Never commit env files with real credentials.
+envfiles=$(printf '%s\n' "$staged" | grep -E '(^|/)\.env(\..*)?$' | grep -v '\.env\.example$' || true)
+if [ -n "$envfiles" ]; then
+  echo "pre-commit: refusing to commit env file(s):"
+  printf '  %s\n' $envfiles
+  exit 1
+fi
+
+# Prettier check on exactly the staged files (fast — no repo-wide pass).
+formattable=$(printf '%s\n' "$staged" | grep -E '\.(ts|tsx|js|mjs|cjs|json|md|css|yml|yaml)$' || true)
+if [ -n "$formattable" ]; then
+  cd "$repo_root/synckit"
+  printf '%s\n' "$formattable" | sed 's|^synckit/||' | xargs pnpm exec prettier --check --ignore-unknown \
+    || { echo "pre-commit: run 'pnpm format' in synckit/ and re-stage."; exit 1; }
+fi

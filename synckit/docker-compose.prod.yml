@@ -1,0 +1,120 @@
+# Production-shaped stack: 2× API instance behind nginx, dashboard, demo,
+# Postgres + Redis. Secrets come from .env (copy .env.prod.example).
+#
+#   docker compose -f docker-compose.prod.yml up --build
+#
+# Endpoints: API/LB http://localhost:8080, dashboard http://localhost:3000,
+# demo http://localhost:5173, Prometheus metrics on server-a/b :4000/metrics
+# (private network only — the LB blocks /metrics and /internal).
+
+x-server: &server
+  build:
+    context: .
+    dockerfile: apps/server/Dockerfile
+  environment: &server-env
+    NODE_ENV: production
+    DATABASE_URL: postgres://synckit:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/synckit
+    REDIS_URL: redis://redis:6379
+    JWT_SECRET: ${JWT_SECRET:?set in .env}
+    INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:?set in .env}
+    DASHBOARD_ORIGIN: ${DASHBOARD_ORIGIN:-http://localhost:3000}
+    STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+    STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: synckit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: synckit
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synckit -d synckit"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # One-shot: applies Drizzle migrations, then exits.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    environment: *server-env
+    command: ["dist/db/migrate.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  server-a:
+    <<: *server
+
+  server-b:
+    <<: *server
+
+  lb:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./infra/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      - server-a
+      - server-b
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: apps/dashboard/Dockerfile
+    environment:
+      SERVER_INTERNAL_URL: http://server-a:4000
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:?set in .env}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - server-a
+    restart: unless-stopped
+
+  demo:
+    build:
+      context: .
+      dockerfile: apps/demo/Dockerfile
+      args:
+        # Browser-facing WS endpoint (through the LB).
+        SYNCKIT_WS_URL: ${DEMO_WS_URL:-ws://localhost:8080/v1/realtime}
+    environment:
+      SYNCKIT_SERVER_URL: http://lb:8080
+      SYNCKIT_API_KEY: ${DEMO_API_KEY:-}
+    ports:
+      - "5173:5173"
+    depends_on:
+      - lb
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:

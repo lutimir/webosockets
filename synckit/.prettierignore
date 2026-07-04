@@ -1,0 +1,9 @@
+node_modules
+dist
+.next
+.turbo
+coverage
+pnpm-lock.yaml
+apps/docs/content/reference/
+storybook-static
+apps/docs/public/_pagefind/

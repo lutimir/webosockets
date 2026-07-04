@@ -1,0 +1,39 @@
+# Limits & plans
+
+## Plans
+
+| Plan       | Price   | MAU                    | Concurrent connections | Projects  | Comment history |
+| ---------- | ------- | ---------------------- | ---------------------- | --------- | --------------- |
+| Free       | €0      | 100                    | 10                     | 1         | 30 days         |
+| Pro        | €49/mo  | 1 000 (then €0.05/MAU) | 100                    | 5         | Unlimited       |
+| Scale      | €299/mo | 10 000                 | 1 000                  | Unlimited | Unlimited       |
+| Enterprise | Custom  | Custom                 | Custom                 | Unlimited | Unlimited       |
+
+**MAU** = distinct end users who received a token in the last 30 days.
+Existing users always connect — MAU limits only gate _new_ users
+(`402 payment_required` from `POST /v1/tokens`, with an upgrade link).
+Connection limits close the socket with code `4403`.
+
+Payment failures start a 7-day grace period before limits drop to Free.
+
+## Protocol limits (all plans)
+
+| Limit                          | Value                 | On breach                              |
+| ------------------------------ | --------------------- | -------------------------------------- |
+| WS message size                | 64 KB                 | Connection closed                      |
+| Broadcast payload              | 16 KB (JSON)          | `error: invalid_message`               |
+| Client messages per connection | 50/s (burst 50)       | `4429` close after repeat violations   |
+| Connections per end user       | 5                     | Oldest refused (`4403`)                |
+| Slow consumer buffer           | 1 MB soft / 5 MB hard | Drops (`slow_consumer`) / `1013` close |
+| Comment body                   | 10 000 chars          | `validation_error`                     |
+| REST rate limit                | 100 req/min/key       | `429` + `Retry-After`                  |
+
+## Close codes
+
+| Code   | Meaning                         | SDK behavior                 |
+| ------ | ------------------------------- | ---------------------------- |
+| `4401` | Token missing/invalid/expired   | Fetch fresh token, reconnect |
+| `4403` | Plan or connection limit        | Surface error, no retry loop |
+| `4429` | Rate limit                      | Backoff, reconnect           |
+| `1013` | Backpressure (slow consumer)    | Reconnect with backoff       |
+| `1001` | Instance shutting down (deploy) | Immediate reconnect via LB   |

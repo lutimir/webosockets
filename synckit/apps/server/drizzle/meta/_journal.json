@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1782997256209,
+      "tag": "0000_volatile_wallflower",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1783013713644,
+      "tag": "0001_white_misty_knight",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783093364763,
+      "tag": "0002_far_secret_warriors",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783112880865,
+      "tag": "0003_regular_satana",
+      "breakpoints": true
+    }
+  ]
+}

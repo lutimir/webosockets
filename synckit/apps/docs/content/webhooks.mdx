@@ -1,0 +1,60 @@
+# Webhooks
+
+Get server-to-server notifications when things happen in your project —
+send emails for offline mentions, sync comments into your own database,
+trigger Slack messages.
+
+## Events
+
+| Event              | Fired when                          |
+| ------------------ | ----------------------------------- |
+| `comment.created`  | A new comment or reply is created   |
+| `comment.replied`  | A reply lands in an existing thread |
+| `comment.resolved` | A thread is resolved / unresolved   |
+| `comment.deleted`  | A comment is soft-deleted           |
+
+## Delivery contract
+
+- `POST` with JSON body:
+
+  ```json
+  {
+    "id": "0195…", // unique per delivery attempt batch
+    "deliveryId": "0195…", // stable per delivery — deduplicate on this
+    "event": "comment.created",
+    "createdAt": "2026-07-04T12:00:00.000Z",
+    "data": { "…": "event payload" }
+  }
+  ```
+
+- **At-least-once**: failures retry with exponential backoff (3 attempts
+  by default). Deduplicate on `deliveryId`.
+- Respond `2xx` within 5 s; anything else counts as a failure.
+- Deliveries are queued in Postgres and survive server restarts; multiple
+  instances claim work safely (`FOR UPDATE SKIP LOCKED`).
+
+## Verifying signatures
+
+Every delivery carries `X-SyncKit-Signature: t=<unix>,v1=<hex>` — an
+HMAC-SHA256 of `"<t>.<body>"` with your endpoint's secret (shown once at
+creation). Reject when the signature mismatches **or** `t` is older than
+5 minutes (replay protection):
+
+```ts
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+function verify(secret: string, body: string, header: string): boolean {
+  const { t, v1 } = Object.fromEntries(header.split(",").map((p) => p.split("=")));
+  if (Math.abs(Date.now() / 1000 - Number(t)) > 300) return false;
+  const expected = createHmac("sha256", secret).update(`${t}.${body}`).digest("hex");
+  return v1.length === expected.length && timingSafeEqual(Buffer.from(v1), Buffer.from(expected));
+}
+```
+
+## URL restrictions (SSRF guard)
+
+Endpoint URLs must be public `http(s)` — loopback, private ranges,
+link-local/metadata addresses and URLs with embedded credentials are
+rejected at creation **and re-checked before every delivery** (DNS
+rebinding does not help). Localhost receivers work in development
+(`WEBHOOKS_ALLOW_PRIVATE=true` or any non-production `NODE_ENV`).

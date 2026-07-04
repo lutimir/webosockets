@@ -1,0 +1,69 @@
+# Concepts
+
+## Projects & environments
+
+Everything belongs to a **project** (one per app per environment — `dev` /
+`prod`). API keys (`sk_dev_…`, `sk_prod_…`) are scoped to one project; so
+are rooms, end users, comments and webhooks. Data never crosses projects —
+including realtime fan-out, which is namespaced per project at the pub/sub
+layer.
+
+## Tokens & identity
+
+Two credential types, deliberately separate:
+
+| Credential              | Lives          | Used for                         |
+| ----------------------- | -------------- | -------------------------------- |
+| API key `sk_…`          | Your backend   | REST API + minting client tokens |
+| Client JWT (1 h, HS256) | User's browser | The WebSocket connection         |
+
+`POST /v1/tokens` upserts the **end user** (your `externalUserId`, display
+name, avatar) and returns the JWT. The SDK's `tokenProvider` is called on
+every (re)connect, so expiry is invisible to you. A token from project A
+can never join a room in project B.
+
+## Rooms
+
+A room is a collaboration space keyed by _your_ identifier (a document id,
+board id, …) — created implicitly on first join. Everything inside a room
+is ordered by a per-room **sequence number**: clients detect gaps (missed
+messages while momentarily offline) and resync automatically with a fresh
+snapshot.
+
+## Presence
+
+Presence is _ephemeral_ state per member per room — cursor position,
+selection, "is typing". It lives in Redis with a TTL, never in Postgres:
+when a user disconnects (or an instance dies), their presence evaporates
+and other members get a `presence_diff`. Updates are last-write-wins and
+throttled client-side (`useUpdateMyPresence`, ~16/s).
+
+## Broadcasts
+
+Arbitrary JSON events (`board:move`, `emoji:thrown`, …) fanned out to every
+other room member. At-most-once, low latency (single-digit ms measured),
+size-capped. The server does not echo a broadcast back to its sender —
+apply your own events optimistically.
+
+## Comments
+
+The one _persistent_ primitive: threaded comments with resolve state and a
+free-form JSON **anchor** (`{ blockId }`, `{ cardId }`, `{ x, y }` — your
+choice) so a thread can pin to anything in your UI. Live events
+(`comment_created`/`comment_updated`) reach room members instantly;
+history is paginated over the same socket or via REST.
+
+## Notifications
+
+Per-user (not per-room) events — "you were replied to" — delivered across
+all of that user's connections, in any room. Thread participants are
+notified automatically on replies; delivery also triggers webhooks so you
+can send email/push for offline users.
+
+## Scale-out model
+
+Instances are stateless apart from their local socket set. Redis pub/sub
+carries every room event to every instance; each delivers to its local
+members. That is why load balancers need no sticky sessions and why an
+instance can be replaced live — reconnecting clients land anywhere and
+resync. See [Self-hosting](/self-hosting) for the verified failover story.
