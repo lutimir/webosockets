@@ -38,6 +38,11 @@ db.exec(`
   );
 `);
 
+/* migrácia: stripe_session na idempotentné zapisovanie platieb (webhook + confirm) */
+try { db.exec(`ALTER TABLE tips ADD COLUMN stripe_session TEXT`); } catch { /* už existuje */ }
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tips_stripe
+         ON tips(stripe_session) WHERE stripe_session IS NOT NULL`);
+
 /* ---------- heslá ---------- */
 const hashPassword = (password, salt) =>
   crypto.scryptSync(password, salt, 64).toString("hex");
@@ -79,10 +84,12 @@ function checkLogin(slug, password) {
 }
 
 /* ---------- tips ---------- */
-function addTip(slug, { name, amount, msg, monthly }) {
+/* Pri stripeSession je INSERT idempotentný — opakovaný webhook platbu nezduplikuje. */
+function addTip(slug, { name, amount, msg, monthly, stripeSession }) {
   db.prepare(
-    `INSERT INTO tips (slug, name, amount, msg, monthly, ts) VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(slug, name, amount, msg, monthly ? 1 : 0, Date.now());
+    `INSERT OR IGNORE INTO tips (slug, name, amount, msg, monthly, ts, stripe_session)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(slug, name, amount, msg, monthly ? 1 : 0, Date.now(), stripeSession ?? null);
 }
 
 /* ---------- sessions ---------- */

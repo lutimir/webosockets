@@ -7,7 +7,17 @@
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
+
+/* mini .env loader (server/.env, gitignorovaný) — nič neprepíše existujúce env */
+try {
+  for (const line of fs.readFileSync(path.join(__dirname, ".env"), "utf8").split("\n")) {
+    const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (m && !(m[1] in process.env)) process.env[m[1]] = m[2];
+  }
+} catch { /* .env je nepovinný */ }
+
 const db = require("./db");
+const stripe = require("./stripe");
 
 const PORT = parseInt(process.env.GROS_PORT, 10) || 8080;
 const STATIC_ROOT = path.resolve(__dirname, "..");
@@ -31,7 +41,7 @@ const json = (res, code, data) => {
   res.end(body);
 };
 
-const readBody = (req) => new Promise((resolve, reject) => {
+const readRaw = (req) => new Promise((resolve, reject) => {
   let size = 0;
   const chunks = [];
   req.on("data", (c) => {
@@ -39,12 +49,15 @@ const readBody = (req) => new Promise((resolve, reject) => {
     if (size > 64 * 1024) { reject(new Error("body too large")); req.destroy(); return; }
     chunks.push(c);
   });
-  req.on("end", () => {
-    try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks)) : {}); }
-    catch { reject(new Error("invalid json")); }
-  });
+  req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
   req.on("error", reject);
 });
+
+const readBody = async (req) => {
+  const raw = await readRaw(req);
+  try { return raw ? JSON.parse(raw) : {}; }
+  catch { throw new Error("invalid json"); }
+};
 
 const getCookie = (req, name) => {
   const m = (req.headers.cookie || "").match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
@@ -68,6 +81,39 @@ async function handleApi(req, res, url) {
   // GET /api/health
   if (req.method === "GET" && url.pathname === "/api/health")
     return json(res, 200, { ok: true, service: "gros" });
+
+  // GET /api/config — frontend podľa toho vie, či sú platby reálne
+  if (req.method === "GET" && url.pathname === "/api/config")
+    return json(res, 200, { payments: stripe.enabled() ? "stripe" : "demo" });
+
+  // POST /api/stripe/webhook — checkout.session.completed → zapíš tip
+  if (req.method === "POST" && url.pathname === "/api/stripe/webhook") {
+    const raw = await readRaw(req);
+    if (!stripe.verifyWebhook(raw, req.headers["stripe-signature"]))
+      return json(res, 400, { error: "Neplatný podpis webhooku" });
+    const event = JSON.parse(raw);
+    if (event.type === "checkout.session.completed") {
+      const parsed = stripe.tipFromSession(event.data.object);
+      if (parsed && db.getCreator(parsed.slug)) db.addTip(parsed.slug, parsed.tip);
+    }
+    return json(res, 200, { received: true });
+  }
+
+  // POST /api/stripe/confirm — fallback po návrate zo success_url (bez webhookov)
+  if (req.method === "POST" && url.pathname === "/api/stripe/confirm") {
+    if (!stripe.enabled()) return json(res, 400, { error: "Stripe nie je nakonfigurovaný" });
+    const b = await readBody(req);
+    const id = cleanStr(b.session_id, 200);
+    if (!id) return json(res, 400, { error: "Chýba session_id" });
+    const session = await stripe.getCheckoutSession(id);
+    if (session.payment_status !== "paid")
+      return json(res, 402, { error: "Platba zatiaľ neprebehla" });
+    const parsed = stripe.tipFromSession(session);
+    if (!parsed || !db.getCreator(parsed.slug))
+      return json(res, 400, { error: "Neznáma platba" });
+    db.addTip(parsed.slug, parsed.tip); // idempotentné — webhook mohol predbehnúť
+    return json(res, 200, { ok: true, slug: parsed.slug, amount: parsed.tip.amount });
+  }
 
   // GET /api/me
   if (req.method === "GET" && url.pathname === "/api/me")
@@ -127,7 +173,7 @@ async function handleApi(req, res, url) {
     if (req.method === "GET" && seg.length === 3)
       return json(res, 200, creator);
 
-    // POST /api/creators/:slug/tips
+    // POST /api/creators/:slug/tips — demo platba (bez Stripe)
     if (req.method === "POST" && seg[3] === "tips") {
       const b = await readBody(req);
       const amount = Math.round(Number(b.amount) * 100) / 100;
@@ -140,6 +186,26 @@ async function handleApi(req, res, url) {
         monthly: !!b.monthly,
       });
       return json(res, 201, db.getCreator(slug));
+    }
+
+    // POST /api/creators/:slug/checkout — reálna platba cez Stripe Checkout
+    if (req.method === "POST" && seg[3] === "checkout") {
+      if (!stripe.enabled()) return json(res, 200, { demo: true });
+      const b = await readBody(req);
+      const amount = Math.round(Number(b.amount) * 100) / 100;
+      if (!(amount >= 0.5 && amount <= 10000))
+        return json(res, 400, { error: "Suma musí byť 0,50 – 10 000 €" });
+      const session = await stripe.createCheckoutSession({
+        creator,
+        tip: {
+          amount,
+          name: cleanStr(b.name, 40) || "Anonym",
+          msg: cleanStr(b.msg, 240),
+          monthly: !!b.monthly,
+        },
+        origin: `${req.headers["x-forwarded-proto"] || "http"}://${req.headers.host || "localhost:" + PORT}`,
+      });
+      return json(res, 200, { url: session.url });
     }
   }
 
@@ -180,6 +246,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`🪙 Groš beží na http://localhost:${PORT}`);
+  console.log(`   platby:   ${stripe.enabled() ? "Stripe ✅" : "demo režim (nastav STRIPE_SECRET_KEY v server/.env)"}`);
   console.log(`   landing:  http://localhost:${PORT}/`);
   console.log(`   appka:    http://localhost:${PORT}/app.html`);
   console.log(`   demo:     http://localhost:${PORT}/app.html#c/demo`);

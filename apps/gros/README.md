@@ -54,11 +54,34 @@ python3 -m http.server 8080
 | GET | `/api/creators/:slug` | verejný profil + príspevky |
 | POST | `/api/creators/:slug/tips` | nový príspevok `{name, amount, msg, monthly}` |
 
-## Roadmapa — zvyšné 3 prompty
+### Prompt 3/5 — reálne platby (Stripe)
+
+- **Stripe Checkout** (`server/stripe.js`) — priamo cez Stripe REST API vstavaným `fetch`, bez SDK:
+  - jednorazové platby (`mode=payment`) aj **mesačná podpora** (`mode=subscription`, interval month)
+  - suma, meno a odkaz putujú v metadátach session
+- **Webhook** `POST /api/stripe/webhook` — overenie podpisu (HMAC-SHA256, timing-safe, 5 min tolerancia), `checkout.session.completed` → zápis príspevku
+- **Confirm fallback** `POST /api/stripe/confirm` — po návrate zo `success_url` si appka platbu overí sama (pre lokálny vývoj bez webhookov); server si stav vždy vypýta od Stripe, klientovi sa neverí
+- **Idempotencia** — `stripe_session` má unikátny index, webhook + confirm + retry nikdy nezduplikujú platbu
+- **Automatické režimy** — frontend sa cez `GET /api/config` dozvie, či sú platby reálne:
+  - kľúče nastavené → tlačidlo Prispieť presmeruje na Stripe pokladňu, po návrate konfety a zápis
+  - bez kľúčov → pôvodný simulovaný checkout modal
+
+#### Zapnutie reálnych platieb
+
+```bash
+cp server/.env.example server/.env   # doplň STRIPE_SECRET_KEY a STRIPE_WEBHOOK_SECRET
+node server/server.js                # "platby: Stripe ✅"
+
+# webhooky lokálne (Stripe CLI):
+stripe listen --forward-to localhost:8080/api/stripe/webhook
+```
+
+> **Poznámka k produkcii:** platby zatiaľ chodia na jeden Stripe účet platformy. Skutočná výplata tvorcom (split platieb, KYC) sa robí cez **Stripe Connect** — to je krok pri škálovaní, architektúra je na to pripravená (stačí pridať `transfer_data` do checkout session).
+
+## Roadmapa — zvyšné 2 prompty
 
 | Prompt | Čo pribudne |
 |---|---|
-| **3** | **Stripe Checkout** — reálne platby (jednorazové aj subscriptions), webhooky |
 | **4** | Integrácia s curling hrou v tomto repe (widget in-game), verejný katalóg tvorcov, notifikácie cez existujúci WebSocket server |
 | **5** | Polish na predaj: onboarding e-maily, admin štatistiky, SEO/OG karty, deploy (Vercel/Fly.io) a pitch deck |
 
@@ -81,8 +104,10 @@ apps/gros/
 │   ├── app.js      # router + views + store vrstva (Remote/Local) + simulovaný checkout
 │   └── widget.js   # embedovateľné tlačidlo podpory
 └── server/
-    ├── server.js   # HTTP server: REST API + statické súbory (node:http)
-    └── db.js       # SQLite vrstva: creators, tips, sessions (node:sqlite)
+    ├── server.js     # HTTP server: REST API + statické súbory (node:http)
+    ├── db.js         # SQLite vrstva: creators, tips, sessions (node:sqlite)
+    ├── stripe.js     # Stripe Checkout + webhooky (fetch, bez SDK)
+    └── .env.example  # šablóna pre Stripe kľúče
 ```
 
-`checkout()` v `app.js` je jediné miesto, ktoré treba vymeniť za Stripe Checkout session — zvyšok appky je na to pripravený. Backend zámerne nemá ani jednu npm závislosť: `node server/server.js` a beží.
+Backend zámerne nemá ani jednu npm závislosť: `node server/server.js` a beží — vrátane reálnych platieb.

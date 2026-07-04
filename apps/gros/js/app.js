@@ -66,7 +66,12 @@
 
   const RemoteStore = {
     mode: "remote",
-    async init() { me = (await api("/me")).slug; },
+    payments: "demo",
+    async init() {
+      const [meRes, cfg] = await Promise.all([api("/me"), api("/config").catch(() => ({}))]);
+      me = meRes.slug;
+      this.payments = cfg.payments || "demo";
+    },
     async getCreator(slug) {
       try { return await api("/creators/" + encodeURIComponent(slug)); }
       catch { return null; }
@@ -75,6 +80,8 @@
     async login(slug, password) { me = (await api("/login", { slug, password })).slug; },
     async logout() { await api("/logout", {}); me = null; },
     async addTip(slug, tip) { return api("/creators/" + encodeURIComponent(slug) + "/tips", tip); },
+    async createCheckout(slug, tip) { return api("/creators/" + encodeURIComponent(slug) + "/checkout", tip); },
+    async confirmPayment(sessionId) { return api("/stripe/confirm", { session_id: sessionId }); },
   };
 
   /* ================= LocalStore — demo v prehliadači ================= */
@@ -99,6 +106,7 @@
 
   const LocalStore = {
     mode: "local",
+    payments: "demo",
     state: null,
     save() { localStorage.setItem(LS_KEY, JSON.stringify(this.state)); },
     async init() {
@@ -367,8 +375,23 @@
     });
   }
 
-  /* Simulovaný checkout — v produkcii nahradiť redirectom na Stripe Checkout */
-  function checkout(creator, tip) {
+  /* Checkout: pri nakonfigurovanom Stripe presmeruje na reálnu pokladňu,
+   * inak otvorí simulovaný platobný modal. */
+  async function checkout(creator, tip) {
+    if (store.payments === "stripe") {
+      toast("💳 Presmerúvam na platbu…");
+      try {
+        const r = await store.createCheckout(creator.slug, tip);
+        if (r.url) { location.href = r.url; return; }
+      } catch (e) {
+        toast("⚠️ " + e.message);
+        return;
+      }
+    }
+    simulatedCheckout(creator, tip);
+  }
+
+  function simulatedCheckout(creator, tip) {
     const overlay = document.createElement("div");
     overlay.className = "modal-overlay";
     overlay.innerHTML = `
@@ -484,10 +507,26 @@
       store = LocalStore;
     }
     await store.init();
+
+    /* návrat zo Stripe success_url: ?paid=1&session_id=cs_... */
+    const qs = new URLSearchParams(location.search);
+    if (qs.get("paid") === "1" && qs.get("session_id") && store.confirmPayment) {
+      try {
+        const r = await store.confirmPayment(qs.get("session_id"));
+        confetti();
+        toast(`🎉 Ďakujeme za príspevok ${eur(r.amount)}!`);
+      } catch (e) {
+        toast("⚠️ " + e.message);
+      }
+      history.replaceState(null, "", location.pathname + location.hash);
+    }
+
     const foot = document.querySelector(".footer p");
-    if (foot) foot.textContent = store.mode === "remote"
-      ? "🪙 Groš — beží na Groš API (Node + SQLite). Platby sú simulované; produkčná verzia napojí Stripe."
-      : "🪙 Groš — demo beží celé v prehliadači (localStorage). Platby sú simulované; produkčná verzia napojí Stripe.";
+    if (foot) foot.textContent = store.mode !== "remote"
+      ? "🪙 Groš — demo beží celé v prehliadači (localStorage). Platby sú simulované."
+      : store.payments === "stripe"
+        ? "🪙 Groš — beží na Groš API (Node + SQLite), platby idú cez Stripe. 💳"
+        : "🪙 Groš — beží na Groš API (Node + SQLite). Platby sú simulované; nastav STRIPE_SECRET_KEY v server/.env pre reálne platby.";
     window.addEventListener("hashchange", route);
     route();
   })();

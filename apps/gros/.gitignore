@@ -2,3 +2,4 @@ server/*.db
 server/*.db-wal
 server/*.db-shm
 server.log
+server/.env
