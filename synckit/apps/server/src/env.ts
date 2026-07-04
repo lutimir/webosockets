@@ -28,6 +28,11 @@ const envSchema = z.object({
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
   METERING_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+  /** Dev/test escape hatch: permit webhook targets on private addresses. */
+  WEBHOOKS_ALLOW_PRIVATE: z
+    .string()
+    .optional()
+    .transform((value) => value === "true"),
 });
 
 export type Env = z.infer<typeof envSchema>;

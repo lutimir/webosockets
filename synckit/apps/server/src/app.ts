@@ -112,6 +112,7 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
     pollIntervalMs: env.WEBHOOK_POLL_INTERVAL_MS,
     backoffBaseMs: env.WEBHOOK_BACKOFF_BASE_MS,
     maxAttempts: env.WEBHOOK_MAX_ATTEMPTS,
+    allowPrivateTargets: env.WEBHOOKS_ALLOW_PRIVATE || env.NODE_ENV !== "production",
   });
   webhooks.start();
   app.decorate("webhooks", webhooks);
@@ -172,6 +173,30 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
     done();
   });
 
+  /** Postgres-unreachable errors surface as 503 + Retry-After, not 500. */
+  function isDatabaseUnavailable(error: unknown): boolean {
+    let current: unknown = error;
+    for (let depth = 0; depth < 5 && current; depth++) {
+      const candidate = current as { code?: unknown; errno?: unknown; cause?: unknown };
+      const raw = candidate.code ?? candidate.errno;
+      const code = typeof raw === "string" || typeof raw === "number" ? String(raw) : "";
+      if (
+        [
+          "ECONNREFUSED",
+          "ECONNRESET",
+          "CONNECTION_CLOSED",
+          "CONNECTION_ENDED",
+          "CONNECT_TIMEOUT",
+          "57P01",
+        ].includes(code)
+      ) {
+        return true;
+      }
+      current = candidate.cause;
+    }
+    return false;
+  }
+
   // Consistent error envelope for the whole API.
   app.setErrorHandler((error, request, reply) => {
     if (hasZodFastifySchemaValidationErrors(error)) {
@@ -183,6 +208,14 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
             .join("; "),
         },
       });
+    }
+    if (isDatabaseUnavailable(error)) {
+      return reply
+        .status(503)
+        .header("retry-after", "5")
+        .send({
+          error: { code: "service_unavailable", message: "database unavailable, retry shortly" },
+        });
     }
     const err = error as FastifyError;
     if (err.statusCode === 429) {

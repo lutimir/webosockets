@@ -91,6 +91,7 @@ describe("webhook dispatcher", () => {
       backoffBaseMs: 5,
       maxAttempts: 3,
       requestTimeoutMs: 2_000,
+      allowPrivateTargets: true, // test receivers listen on 127.0.0.1
       ...overrides,
     });
   }
@@ -170,6 +171,23 @@ describe("webhook dispatcher", () => {
     expect(settled?.status).toBe("failed");
     expect(settled?.attempts).toBe(3);
     expect(settled?.lastError).toBeTruthy();
+  });
+
+  it("blocks deliveries to private addresses when the SSRF guard is active", async () => {
+    const endpoint = await createWebhookEndpoint(db, {
+      projectId,
+      url: "http://169.254.169.254/latest/meta-data", // cloud metadata
+      events: ["comment.deleted"],
+    });
+
+    // Production configuration: private targets are refused, no retries.
+    const dispatcher = makeDispatcher({ allowPrivateTargets: false });
+    await dispatcher.enqueue(projectId, "comment.deleted", { commentId: "c3" });
+
+    const [queued] = await listDeliveriesByEndpoint(db, endpoint.id);
+    const settled = await tickUntilSettled(dispatcher, queued!.id);
+    expect(settled?.status).toBe("failed");
+    expect(settled?.lastError).toMatch(/^blocked: /);
   });
 
   it("does not enqueue anything for events nobody subscribes to", async () => {

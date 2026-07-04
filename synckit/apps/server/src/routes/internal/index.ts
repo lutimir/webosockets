@@ -47,6 +47,7 @@ import {
   toWireComment,
   updateOrganization,
 } from "../../repos/index.js";
+import { checkWebhookUrl } from "../../webhooks/ssrf.js";
 
 function slugify(name: string): string {
   const base = name
@@ -444,6 +445,13 @@ export function internalRoutes(app: FastifyInstance): void {
       const project = await projectOf(context, slug);
       if (!project)
         return reply.status(404).send({ error: { code: "not_found", message: "project" } });
+      // SSRF guard at creation time; deliveries re-check before every POST.
+      const verdict = await checkWebhookUrl(body.url, {
+        allowPrivate: app.env.WEBHOOKS_ALLOW_PRIVATE || app.env.NODE_ENV !== "production",
+      });
+      if (!verdict.safe) {
+        return reply.status(400).send({ error: { code: "invalid_url", message: verdict.reason } });
+      }
       const endpoint = await createWebhookEndpoint(app.db, {
         projectId: project.id,
         url: body.url,

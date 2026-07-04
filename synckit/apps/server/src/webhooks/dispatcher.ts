@@ -13,6 +13,7 @@ import {
 } from "../repos/index.js";
 
 import { signWebhookPayload } from "./signature.js";
+import { checkWebhookUrl } from "./ssrf.js";
 
 export interface WebhookDispatcherOptions {
   db: Db;
@@ -22,6 +23,8 @@ export interface WebhookDispatcherOptions {
   maxAttempts: number;
   requestTimeoutMs?: number;
   fetchImpl?: typeof fetch;
+  /** Dev/test only: deliver to private addresses (local receivers). */
+  allowPrivateTargets?: boolean;
 }
 
 /**
@@ -79,6 +82,22 @@ export class WebhookDispatcher {
   }
 
   private async attempt({ delivery, endpoint }: ClaimedDelivery): Promise<void> {
+    // SSRF: re-verify at delivery time — DNS may have changed since creation.
+    const verdict = await checkWebhookUrl(endpoint.url, {
+      allowPrivate: this.options.allowPrivateTargets ?? false,
+    });
+    if (!verdict.safe) {
+      await markAttemptFailed(this.options.db, delivery.id, {
+        error: `blocked: ${verdict.reason}`,
+        final: true,
+      });
+      this.options.log.warn(
+        { deliveryId: delivery.id, url: endpoint.url, reason: verdict.reason },
+        "webhook delivery blocked by SSRF guard",
+      );
+      return;
+    }
+
     const body = JSON.stringify({
       id: uuidv7(),
       deliveryId: delivery.id,
