@@ -141,6 +141,24 @@ describe("state machine", () => {
     expect(rejoin?.initialPresence).toEqual({ cursor: { x: 5, y: 6 } });
   });
 
+  it("join_room precedes requests issued by status subscribers", async () => {
+    // Regression: a "connected" subscriber that immediately fires a request
+    // (like a comments fetch) must not race ahead of join_room.
+    const room = client.joinRoom("doc-1");
+    client.on("status", (status) => {
+      if (status === "connected") void room.comments.list().catch(() => undefined);
+    });
+    await settle();
+    FakeWebSocket.latest().serverOpen();
+    await settle();
+
+    const types = FakeWebSocket.latest()
+      .sentMessages()
+      .map((message) => message.type);
+    expect(types.indexOf("join_room")).toBeGreaterThanOrEqual(0);
+    expect(types.indexOf("comment_list")).toBeGreaterThan(types.indexOf("join_room"));
+  });
+
   it("disconnect() closes permanently — no reconnect is scheduled", async () => {
     client.connect();
     await settle();

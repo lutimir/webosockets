@@ -10,6 +10,7 @@ import { type FastifyBaseLogger } from "fastify";
 import { type Redis } from "ioredis";
 
 import { type Db } from "../db/client.js";
+import { fanoutSeconds } from "../metrics.js";
 import { upsertRoom } from "../repos/index.js";
 
 import { type ConnectionManager, type ManagedConnection } from "./connection-manager.js";
@@ -327,9 +328,11 @@ export class RoomHub {
       return;
     }
 
+    const stopTimer = fanoutSeconds.startTimer();
     for (const connection of local) {
       if (connection.id === envelope.sender) continue;
       this.deps.manager.deliver(connection, envelope.message);
     }
+    stopTimer();
   }
 }

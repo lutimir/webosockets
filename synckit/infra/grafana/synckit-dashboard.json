@@ -1,0 +1,150 @@
+{
+  "title": "SyncKit — Realtime & API",
+  "uid": "synckit-main",
+  "schemaVersion": 39,
+  "tags": ["synckit"],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-3h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "query": "label_values(synckit_ws_connections_active, instance)",
+        "includeAll": true,
+        "multi": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Active WS connections",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(synckit_ws_connections_active{instance=~\"$instance\"})",
+          "legendFormat": "connections"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Messages / s (in vs out)",
+      "gridPos": { "h": 6, "w": 9, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum by (direction) (rate(synckit_ws_messages_total{instance=~\"$instance\"}[1m]))",
+          "legendFormat": "{{direction}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Fan-out delivery latency (p50 / p95 / p99)",
+      "gridPos": { "h": 6, "w": 9, "x": 15, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(synckit_broadcast_fanout_seconds_bucket{instance=~\"$instance\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(synckit_broadcast_fanout_seconds_bucket{instance=~\"$instance\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(synckit_broadcast_fanout_seconds_bucket{instance=~\"$instance\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "WS closes by code (4401 auth, 4403 limits, 4429 rate, 1013 backpressure)",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "expr": "sum by (code) (increase(synckit_ws_closes_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{code}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Dropped messages (slow consumers)",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 6 },
+      "targets": [
+        {
+          "expr": "sum(rate(synckit_ws_dropped_messages_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "dropped/s"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "REST p95 latency by route",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (route, le) (rate(synckit_http_request_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
+          "legendFormat": "{{route}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "REST error rate (4xx / 5xx)",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum(rate(synckit_http_request_duration_seconds_count{status=~\"4..\", instance=~\"$instance\"}[5m]))",
+          "legendFormat": "4xx/s"
+        },
+        {
+          "expr": "sum(rate(synckit_http_request_duration_seconds_count{status=~\"5..\", instance=~\"$instance\"}[5m]))",
+          "legendFormat": "5xx/s"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Process (CPU / RSS)",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 19 },
+      "targets": [
+        {
+          "expr": "rate(process_cpu_user_seconds_total{instance=~\"$instance\"}[1m])",
+          "legendFormat": "cpu {{instance}}"
+        },
+        {
+          "expr": "process_resident_memory_bytes{instance=~\"$instance\"}",
+          "legendFormat": "rss {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Event loop lag p99",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 19 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "expr": "nodejs_eventloop_lag_p99_seconds{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}}"
+        }
+      ]
+    }
+  ]
+}

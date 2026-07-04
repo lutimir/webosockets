@@ -4,6 +4,7 @@ import { v7 as uuidv7 } from "uuid";
 import { type WebSocket } from "ws";
 
 import { type ClientIdentity } from "../lib/tokens.js";
+import { wsConnectionsActive, wsDroppedMessagesTotal, wsMessagesTotal } from "../metrics.js";
 
 /** Sliding token bucket: `capacity` burst, refilled at `refillPerSec`. */
 export class TokenBucket {
@@ -105,6 +106,7 @@ export class ConnectionManager {
     this.connections.set(connection.id, connection);
     this.perEndUser.set(userKey, (this.perEndUser.get(userKey) ?? 0) + 1);
     this.perProject.set(identity.projectId, (this.perProject.get(identity.projectId) ?? 0) + 1);
+    wsConnectionsActive.inc();
     socket.on("pong", () => {
       connection.missedPongs = 0;
     });
@@ -113,6 +115,7 @@ export class ConnectionManager {
 
   unregister(connection: ManagedConnection): void {
     if (!this.connections.delete(connection.id)) return;
+    wsConnectionsActive.dec();
     const userKey = `${connection.identity.projectId}:${connection.identity.endUserId}`;
     const decrement = (map: Map<string, number>, key: string) => {
       const next = (map.get(key) ?? 1) - 1;
@@ -143,6 +146,7 @@ export class ConnectionManager {
     }
     if (buffered >= this.options.backpressureSoftBytes) {
       connection.droppedMessages += 1;
+      wsDroppedMessagesTotal.inc();
       if (!connection.slowConsumerNotified) {
         connection.slowConsumerNotified = true;
         socket.send(
@@ -158,6 +162,7 @@ export class ConnectionManager {
 
     connection.slowConsumerNotified = false;
     socket.send(JSON.stringify(message));
+    wsMessagesTotal.inc({ direction: "out" });
   }
 
   /** Server pings every interval; two missed pongs and the socket is dead. */

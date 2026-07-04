@@ -192,11 +192,14 @@ export class SyncKitClient {
     ws.addEventListener("open", () => {
       if (generation !== this.generation) return;
       this.reconnectAttempt = 0;
-      this.transition("connected");
-      // Re-join every room with the latest presence, then flush the buffer.
+      // Become "connected" and re-join every room BEFORE notifying status
+      // subscribers — a subscriber that immediately issues a request (e.g.
+      // a comments fetch) must never race ahead of join_room.
+      this.currentStatus = "connected";
       for (const room of this.rooms.values()) room.sendJoin();
       const buffered = this.outbox.splice(0, this.outbox.length);
       for (const message of buffered) ws.send(JSON.stringify(message));
+      this.emitter.emit("status", "connected");
     });
 
     ws.addEventListener("message", (event) => {

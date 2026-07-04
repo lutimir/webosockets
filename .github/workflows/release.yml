@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  images:
+    name: Build & push images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - name: server
+            dockerfile: apps/server/Dockerfile
+          - name: dashboard
+            dockerfile: apps/dashboard/Dockerfile
+          - name: demo
+            dockerfile: apps/demo/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/synckit-${{ matrix.name }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: synckit
+          file: synckit/${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
+
+  publish-sdks:
+    name: Publish SDK packages (changesets)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: synckit/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Install
+        working-directory: synckit
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        working-directory: synckit
+        run: pnpm --filter "./packages/*" build
+
+      # Real publish only when NPM_TOKEN is configured; otherwise a dry-run
+      # proves the packages are publishable without touching the registry.
+      - name: Publish (or dry-run without NPM_TOKEN)
+        working-directory: synckit
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NODE_AUTH_TOKEN" ]; then
+            pnpm exec changeset publish
+          else
+            echo "NPM_TOKEN not set — dry-run only"
+            pnpm --filter "./packages/*" exec pnpm publish --dry-run --no-git-checks
+          fi

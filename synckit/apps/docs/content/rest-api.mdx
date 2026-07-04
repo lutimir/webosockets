@@ -1,0 +1,47 @@
+# REST API
+
+Machine-readable spec: **`GET /v1/openapi.json`** (OpenAPI 3.1, generated
+from the zod schemas that actually validate requests — never stale). Auth:
+`Authorization: Bearer sk_<env>_…`.
+
+## Endpoints
+
+| Method & path                                   | Purpose                                 |
+| ----------------------------------------------- | --------------------------------------- |
+| `POST /v1/tokens`                               | Mint a client JWT for one of your users |
+| `GET /v1/rooms`                                 | List rooms (cursor pagination)          |
+| `POST /v1/rooms`                                | Create a room ahead of first join       |
+| `GET /v1/rooms/:externalId/presence`            | Who is in the room right now            |
+| `GET /v1/rooms/:externalId/comments`            | List comments (cursor pagination)       |
+| `POST /v1/rooms/:externalId/comments`           | Create a comment / threaded reply       |
+| `PATCH /v1/rooms/:id/comments/:commentId`       | Resolve / unresolve                     |
+| `DELETE /v1/rooms/:id/comments/:commentId`      | Soft-delete                             |
+| `GET /v1/users/:externalId/notifications`       | A user's notification inbox             |
+| `POST /v1/users/:externalId/notifications/read` | Mark notifications read                 |
+
+## Error envelope
+
+Every non-2xx response has one shape — branch on `code`, never on message
+text:
+
+```json
+{ "error": { "code": "not_found", "message": "room not found" } }
+```
+
+Common codes: `validation_error` (400), `unauthorized` (401),
+`payment_required` (402 — plan limit, includes an upgrade link),
+`insufficient_scope` (403), `not_found` (404), `rate_limited` (429),
+`service_unavailable` (503 — with `Retry-After`).
+
+## Rate limits
+
+100 requests/min per API key by default (env-configurable). On 429 and
+503, honor `Retry-After` (seconds). The realtime socket has its own
+per-connection budget — see [Limits & plans](/limits).
+
+## Scopes
+
+API keys carry optional scopes (`tokens:write`, `comments:read`,
+`comments:write`, `rooms:read`, `broadcast:write`, …). A key with no
+scopes has full project access; scoped keys get `403 insufficient_scope`
+beyond their grant.

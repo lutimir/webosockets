@@ -1,0 +1,59 @@
+# Quickstart — Vanilla JS/TS
+
+The client is framework-agnostic, 3.7 kB gzip, and works in browsers and
+Node ≥ 22.
+
+```bash
+pnpm add @synckit/client
+```
+
+```ts
+import { createClient } from "@synckit/client";
+
+const client = createClient({
+  url: "wss://api.your-synckit.com/v1/realtime",
+  tokenProvider: () => fetch("/api/synckit-token").then((r) => r.json().then((b) => b.token)),
+});
+
+const room = client.joinRoom("document-42", {
+  initialPresence: { cursor: null },
+});
+
+// ── Presence ────────────────────────────────────────────────
+room.presence.subscribe((others) => {
+  renderAvatars(others); // [{ endUserId, displayName, data }, …]
+});
+document.addEventListener("pointermove", (e) => {
+  room.presence.update({ cursor: { x: e.clientX, y: e.clientY } });
+});
+
+// ── Broadcasts ──────────────────────────────────────────────
+room.broadcast.on("card:moved", (payload, from) => applyMove(payload));
+room.broadcast.emit("card:moved", { cardId: "c1", toColumn: "done" });
+
+// ── Comments ────────────────────────────────────────────────
+const page = await room.comments.list({ limit: 50 });
+await room.comments.create({ body: "Ship it 🚀", anchor: { blockId: "intro" } });
+room.comments.on("created", (comment) => renderComment(comment));
+
+// ── Notifications (cross-room, per user) ────────────────────
+client.notifications.subscribe((notification) => showToast(notification));
+
+// ── Connection lifecycle ────────────────────────────────────
+client.on("status", (status) => {
+  // idle → connecting → connected → reconnecting → closed
+  statusBadge.textContent = status;
+});
+```
+
+## What you get for free
+
+- **Reconnects with backoff + jitter**, token refresh on expiry (4401),
+  automatic room re-join with your latest presence.
+- **Offline buffer** — presence/broadcasts sent while disconnected are
+  queued (drop-oldest, 100 messages) and flushed on reconnect.
+- **Gap detection** — missed messages trigger a transparent room resync;
+  you never render stale presence.
+- **Backpressure etiquette** — the server tells slow consumers
+  (`slow_consumer`) before dropping, and the client surfaces it as an
+  `error` event.

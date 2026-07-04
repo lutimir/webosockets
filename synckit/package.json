@@ -15,7 +15,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "db:migrate": "pnpm --filter @synckit/server db:migrate",
-    "db:seed": "pnpm --filter @synckit/server db:seed"
+    "db:seed": "pnpm --filter @synckit/server db:seed",
+    "docs:reference": "typedoc --entryPoints packages/client/src/index.ts --out apps/docs/content/reference/client && typedoc --entryPoints packages/react/src/index.ts --out apps/docs/content/reference/react"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
@@ -23,11 +24,15 @@
     "eslint": "^9.39.0",
     "prettier": "^3.8.4",
     "turbo": "^2.8.2",
+    "typedoc": "^0.28.19",
+    "typedoc-plugin-markdown": "^4.12.0",
     "typescript": "^5.9.3"
   },
   "pnpm": {
     "overrides": {
-      "postcss@<8.5.10": ">=8.5.10"
+      "postcss@<8.5.10": ">=8.5.10",
+      "nextra>zod": "4.1.13",
+      "nextra-theme-docs>zod": "4.1.13"
     },
     "onlyBuiltDependencies": [
       "@tailwindcss/oxide",

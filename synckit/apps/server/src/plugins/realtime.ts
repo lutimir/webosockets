@@ -4,6 +4,7 @@ import { type WebSocket } from "ws";
 
 import { decrementConnections, getProjectLimits, incrementConnections } from "../billing/limits.js";
 import { verifyClientToken } from "../lib/tokens.js";
+import { wsClosesTotal, wsMessagesTotal } from "../metrics.js";
 import { type ManagedConnection } from "../realtime/connection-manager.js";
 import {
   getRoomByExternalId,
@@ -211,6 +212,7 @@ export function realtimeRoutes(app: FastifyInstance): void {
     };
 
     socket.on("message", (raw: Buffer, isBinary: boolean) => {
+      wsMessagesTotal.inc({ direction: "in" });
       if (ready) enqueue(raw, isBinary);
       else pending.push([raw, isBinary]);
     });
@@ -240,7 +242,8 @@ export function realtimeRoutes(app: FastifyInstance): void {
       }
     };
 
-    socket.on("close", () => {
+    socket.on("close", (code: number) => {
+      wsClosesTotal.inc({ code: String(code) });
       chain = chain.then(cleanup);
     });
 

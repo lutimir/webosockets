@@ -1,0 +1,15 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "plugin": ["typedoc-plugin-markdown"],
+  "tsconfig": "typedoc.tsconfig.json",
+  "readme": "none",
+  "entryFileName": "index",
+  "hidePageHeader": true,
+  "hideBreadcrumbs": true,
+  "useCodeBlocks": true,
+  "excludeInternal": true,
+  "excludePrivate": true,
+  "disableSources": true,
+  "cleanOutputDir": true,
+  "outputFileStrategy": "modules"
+}

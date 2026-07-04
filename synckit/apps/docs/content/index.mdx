@@ -1,0 +1,38 @@
+# SyncKit
+
+Realtime collaboration infrastructure you can embed in an afternoon:
+**presence & live cursors**, **threaded comments**, **notifications** and
+**custom broadcasts** — delivered over one WebSocket, backed by your own
+servers or ours.
+
+```tsx
+<SyncKitProvider client={client}>
+  <RoomProvider id="document-42">
+    <LiveCursors />
+    <PresenceAvatars />
+    <CommentsThread anchor={{ blockId: "intro" }} />
+  </RoomProvider>
+</SyncKitProvider>
+```
+
+## Why SyncKit
+
+- **Minutes to integrate** — a React provider + hooks, or a 3.7 kB (gzip)
+  framework-agnostic client. No CRDT PhD required.
+- **Your auth stays yours** — your backend exchanges its API key for
+  short-lived client JWTs; SyncKit never sees your user database.
+- **Multi-instance by default** — fan-out via Redis pub/sub, no sticky
+  sessions, chaos-tested failover (client reconnects in under 5 s).
+- **Operationally honest** — Prometheus `/metrics`, structured logs,
+  documented load-test results, OpenAPI spec at `/v1/openapi.json`.
+
+## Packages
+
+| Package           | What it is                                     |
+| ----------------- | ---------------------------------------------- |
+| `@synckit/client` | Vanilla JS/TS client (browser & Node)          |
+| `@synckit/react`  | Hooks + ready-made UI components               |
+| `@synckit/core`   | Protocol schemas & shared types (used by both) |
+
+Start with the [React quickstart](/quickstart-react) or the
+[vanilla quickstart](/quickstart-vanilla).

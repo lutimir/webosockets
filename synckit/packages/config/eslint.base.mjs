@@ -15,6 +15,8 @@ export default tseslint.config(
       "**/coverage/**",
       "**/node_modules/**",
       "**/next-env.d.ts",
+      "**/public/_pagefind/**",
+      "**/storybook-static/**",
     ],
   },
   js.configs.recommended,
@@ -47,7 +49,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["**/*.{js,mjs,cjs}"],
+    files: ["**/*.{js,mjs,cjs,jsx}"],
     ...tseslint.configs.disableTypeChecked,
     languageOptions: {
       ...tseslint.configs.disableTypeChecked.languageOptions,

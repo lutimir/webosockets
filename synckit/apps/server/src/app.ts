@@ -19,6 +19,7 @@ import { StripeBillingProvider, type BillingProvider } from "./billing/provider.
 import { billingWebhookRoutes } from "./billing/webhook.js";
 import { createDb, type Db } from "./db/client.js";
 import { type Env } from "./env.js";
+import { httpRequestSeconds, metricsRegistry } from "./metrics.js";
 import { healthzRoutes } from "./plugins/healthz.js";
 import { realtimeRoutes } from "./plugins/realtime.js";
 import { ConnectionManager } from "./realtime/connection-manager.js";
@@ -148,8 +149,15 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
     keyGenerator: (request) => request.headers.authorization ?? request.ip,
     allowList: (request) =>
       request.url === "/healthz" ||
+      request.url === "/metrics" ||
       request.url.startsWith("/v1/realtime") ||
       request.url.startsWith("/billing/"),
+  });
+
+  // Prometheus exporter. Expose it on the private network only (like
+  // /internal) — scrape it, do not publish it.
+  app.get("/metrics", { schema: { hide: true } }, async (_request, reply) => {
+    return reply.type(metricsRegistry.contentType).send(await metricsRegistry.metrics());
   });
 
   // Request id on every response; audit log for every mutation.
@@ -158,6 +166,14 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
     done(null, payload);
   });
   app.addHook("onResponse", (request, reply, done) => {
+    // Route template (not the raw URL) keeps metric cardinality bounded.
+    const route = request.routeOptions.url ?? "unmatched";
+    if (route !== "/metrics" && route !== "/healthz") {
+      httpRequestSeconds.observe(
+        { method: request.method, route, status: String(reply.statusCode) },
+        reply.elapsedTime / 1_000,
+      );
+    }
     if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && request.url.startsWith("/v1/")) {
       request.log.info(
         {
